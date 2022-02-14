@@ -8,7 +8,7 @@
 Ibis provides a standard way to write analytics code, that then can be run in
 multiple engines.
 
-- **Full coverage of SQL features**: Anything you can write in a `SELECT` statement you can wrtite in Ibis
+- **Full coverage of SQL features**: Anything you can write in a `SELECT` statement you can write in Ibis
 - **Abstract over SQL differences**: Write standard code that translates to any SQL syntax
 - **High performance execution**: Execute at the speed of your backend, not your local computer
 - **Integration with community infrastructure**: Ibis works with existing Python tools
