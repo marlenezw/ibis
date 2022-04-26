@@ -10,8 +10,7 @@ from sqlalchemy.engine.interfaces import Dialect
 
 import ibis.expr.datatypes as dt
 import ibis.expr.schema as sch
-
-from .geospatial import geospatial_supported
+from ibis.backends.base.sql.alchemy.geospatial import geospatial_supported
 
 if geospatial_supported:
     import geoalchemy2 as ga
@@ -275,7 +274,7 @@ def sa_array(dialect, satype, nullable=True):
     return dt.Array(value_dtype, nullable=nullable)
 
 
-@sch.infer.register(sa.Table)
+@sch.infer.register((sa.Table, sa.sql.TableClause))
 def schema_from_table(table, schema=None):
     """Retrieve an ibis schema from a SQLAlchemy ``Table``.
 

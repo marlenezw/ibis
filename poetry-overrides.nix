@@ -16,7 +16,18 @@ self: super:
       });
   });
 
-  datafusion = super.datafusion.overridePythonAttrs (attrs: {
+  datafusion = super.datafusion.overridePythonAttrs (attrs: rec {
+    inherit (attrs) version;
+    src = pkgs.fetchFromGitHub {
+      owner = "datafusion-contrib";
+      repo = "datafusion-python";
+      rev = attrs.version;
+      sha256 = "sha256-IWqlY4Cfil3cyQqXm+X9ViRYLzmNaiM3+i/7EyV5CK4=";
+    };
+
+    patches = (attrs.patches or [ ])
+      ++ lib.optionals stdenv.isDarwin [ ./patches/datafusion-macos.patch ];
+
     nativeBuildInputs = (attrs.nativeBuildInputs or [ ])
       ++ (with pkgs.rustPlatform; [ cargoSetupHook maturinBuildHook ]);
 
@@ -24,22 +35,12 @@ self: super:
       ++ lib.optionals stdenv.isDarwin [ pkgs.libiconv ];
 
     cargoDeps = pkgs.rustPlatform.fetchCargoTarball {
-      inherit (attrs) src;
-      sourceRoot = "${attrs.pname}-${attrs.version}";
-      sha256 = "sha256-SHVJWbQROQVQ9qZDTSvHz/O9irCyEPgcmDowerMPYeI=";
+      inherit src patches;
+      sha256 =
+        if stdenv.isDarwin
+        then "sha256-qDXfSisgQ4qr8Sky0aNns8LldiHYs/N1cNatNlwEE18="
+        else "sha256-bDuCbQYNai/mNrS2BqoW4qe7eLZcBhb7GhsFKn08G/U=";
     };
-  });
-
-  pybind11 = super.pybind11.overridePythonAttrs (_: {
-    postBuild = ''
-      make -j $NIX_BUILD_CORES -l $NIX_BUILD_CORES
-    '';
-  });
-
-  mkdocs-jupyter = super.mkdocs-jupyter.overridePythonAttrs (attrs: {
-    propagatedBuildInputs = (attrs.propagatedBuildInputs or [ ]) ++ [
-      self.ipython_genutils
-    ];
   });
 
   nbconvert = super.nbconvert.overridePythonAttrs (attrs: {
@@ -49,45 +50,27 @@ self: super:
     '';
   });
 
-  poetry-dynamic-versioning = super.poetry-dynamic-versioning.overridePythonAttrs (attrs: {
-    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-      self.poetry-core
-    ];
-  });
-
   tabulate = super.tabulate.overridePythonAttrs (_: {
     TABULATE_INSTALL = "lib-only";
   });
 
-  pyparsing = super.pyparsing.overridePythonAttrs (attrs: {
-    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-      self.flit-core
-    ];
+  pandas = super.pandas.overridePythonAttrs (attrs: {
+    setupPyBuildFlags = (attrs.setupPyBuildFlags or [ ])
+      ++ [ "--parallel" "$NIX_BUILD_CORES" ];
   });
 
-  jupyterlab-pygments = super.jupyterlab-pygments.overridePythonAttrs (attrs: {
-    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-      self.jupyter-packaging
-    ];
+  pydantic = super.pydantic.overridePythonAttrs (attrs: {
+    setupPyBuildFlags = (attrs.setupPyBuildFlags or [ ])
+      ++ [ "--parallel" "$NIX_BUILD_CORES" ];
   });
 
-  pandas = super.pandas.overridePythonAttrs (_: {
-    buildPhase = ''
-      runHook preBuild
-      python setup.py build_ext --parallel $NIX_BUILD_CORES bdist_wheel
-      runHook postBuild
-    '';
+  atpublic = super.atpublic.overridePythonAttrs (attrs: {
+    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [ self.pdm-pep517 ];
   });
 
-  soupsieve = super.soupsieve.overridePythonAttrs (attrs: {
-    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-      self.hatchling
-    ];
-  });
-
-  markdown-it-py = super.markdown-it-py.overridePythonAttrs (attrs: {
-    nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-      self.flit-core
-    ];
-  });
+  watchdog = super.watchdog.overrideAttrs (attrs: lib.optionalAttrs
+    (stdenv.isDarwin && lib.versionAtLeast attrs.version "2")
+    {
+      patches = (attrs.patches or [ ]) ++ [ ./patches/watchdog-force-kqueue.patch ];
+    });
 }

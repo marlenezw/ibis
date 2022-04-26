@@ -8,12 +8,8 @@ import sources.nixpkgs {
         inherit (pkgs) lib;
       }) gitignoreSource;
     })
+    (import "${sources.poetry2nix}/overlay.nix")
     (pkgs: super: {
-      poetry2nix = import sources.poetry2nix {
-        inherit pkgs;
-        inherit (pkgs) poetry;
-      };
-
       ibisTestingData = pkgs.fetchFromGitHub {
         owner = "ibis-project";
         repo = "testing-data";
@@ -45,6 +41,38 @@ import sources.nixpkgs {
       ibisDevEnv39 = pkgs.mkPoetryEnv pkgs.python39;
       ibisDevEnv310 = pkgs.mkPoetryEnv pkgs.python310;
       ibisDevEnv = pkgs.ibisDevEnv310;
+
+      gdal_2 = super.gdal_2.overrideAttrs (attrs: {
+        patches = (attrs.patches or [ ]) ++ [
+          (pkgs.fetchpatch {
+            url = "https://github.com/OSGeo/gdal/commit/7a18e2669a733ebe3544e4f5c735fd4d2ded5fa3.patch";
+            sha256 = "sha256-rBgIxJcgRzZR1gyzDWK/Sh7MdPWeczxEYVELbYEV8JY=";
+            relative = "gdal";
+            # this doesn't apply correctly because of line endings
+            excludes = [ "third_party/LercLib/Lerc2.h" ];
+          })
+        ];
+      });
+
+      aws-sdk-cpp = (super.aws-sdk-cpp.overrideAttrs (attrs: {
+        patches = (attrs.patches or [ ]) ++ [
+          # https://github.com/aws/aws-sdk-cpp/pull/1912
+          (pkgs.fetchpatch {
+            url = "https://github.com/aws/aws-sdk-cpp/commit/1884876d331f97e75e60a2f210b4ecd8401ecc8f.patch";
+            sha256 = "sha256-nea8TF6iJcHjwv0nsbrbw15ALQfLeB/DvRRpk35AWAU=";
+          })
+        ];
+      })).override {
+        apis = [
+          "cognito-identity"
+          "config"
+          "core"
+          "identity-management"
+          "s3"
+          "sts"
+          "transfer"
+        ];
+      };
     } // super.lib.optionalAttrs super.stdenv.isDarwin {
       arrow-cpp = super.arrow-cpp.override {
         enableS3 = false;

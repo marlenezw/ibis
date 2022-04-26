@@ -182,7 +182,7 @@ https://conda.anaconda.org/conda-forge/noarch/tomli-2.0.1-pyhd8ed1ab_0.tar.bz2#5
 https://conda.anaconda.org/conda-forge/noarch/toolz-0.11.2-pyhd8ed1ab_0.tar.bz2#f348d1590550371edfac5ed3c1d44f7e
 https://conda.anaconda.org/conda-forge/noarch/traitlets-5.1.1-pyhd8ed1ab_0.tar.bz2#a1bc9765ef9499760e88f568b3a6622c
 https://conda.anaconda.org/conda-forge/noarch/typing-3.10.0.0-pyhd8ed1ab_0.tar.bz2#e6573ac68718f17b9d4f5c8eda3190f2
-https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.2.0-pyha770c72_0.tar.bz2#0b04e3ee5a310a3bec598a04479e7fa3
+https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.2.0-pyha770c72_1.tar.bz2#f0f7e024f94e23d3bfee0ab777bf335a
 https://conda.anaconda.org/conda-forge/noarch/verspec-0.1.0-pyhd8ed1ab_0.tar.bz2#64ebfc29e8399f3eeaf17cb2bd04e770
 https://conda.anaconda.org/conda-forge/noarch/webencodings-0.5.1-py_1.tar.bz2#3563be4c5611a44210d9ba0c16113136
 https://conda.anaconda.org/conda-forge/noarch/xyzservices-2022.4.0-pyhd8ed1ab_0.tar.bz2#3bc94b37aeede5bae4c0ddaadc554e04
@@ -242,11 +242,11 @@ https://conda.anaconda.org/conda-forge/osx-64/regex-2022.3.15-py39h63b48b0_1.tar
 https://conda.anaconda.org/conda-forge/osx-64/rtree-1.0.0-py39h7d0d40a_1.tar.bz2#a3e8a4a3433b8d7daa3d2914b375bd7d
 https://conda.anaconda.org/conda-forge/osx-64/setuptools-62.1.0-py39h6e9494a_0.tar.bz2#d16c2aa67a8f229126295d265e644e88
 https://conda.anaconda.org/conda-forge/osx-64/thrift-0.16.0-py39hfd1d529_1.tar.bz2#41837430af40527e5499a59fd343308b
-https://conda.anaconda.org/conda-forge/osx-64/tiledb-2.8.0-h190f7ed_1.tar.bz2#45372e4a97e33057312340327d04ae4a
+https://conda.anaconda.org/conda-forge/osx-64/tiledb-2.8.1-h190f7ed_0.tar.bz2#658845f19eb439d49101d76c8b8ebf6c
 https://conda.anaconda.org/conda-forge/noarch/tomlkit-0.10.1-pyha770c72_0.tar.bz2#91c52060a85239195a786d4285619ff5
 https://conda.anaconda.org/conda-forge/osx-64/tornado-6.1-py39h63b48b0_3.tar.bz2#82c1e73cdc3ae881ef28d56a3a58225c
 https://conda.anaconda.org/conda-forge/osx-64/typed-ast-1.5.3-py39h63b48b0_0.tar.bz2#728d03eb9b3f4a5d53b3ebaa5b144e76
-https://conda.anaconda.org/conda-forge/noarch/typing-extensions-4.2.0-hd8ed1ab_0.tar.bz2#2f8145b0ba478dc1ac974ac1900d3b66
+https://conda.anaconda.org/conda-forge/noarch/typing-extensions-4.2.0-hd8ed1ab_1.tar.bz2#6d9d7480c5780514779967be2ee8b963
 https://conda.anaconda.org/conda-forge/osx-64/unicodedata2-14.0.0-py39h63b48b0_1.tar.bz2#19c1ac41e067315d023bed42e214c8ea
 https://conda.anaconda.org/conda-forge/noarch/zict-2.1.0-pyhd8ed1ab_0.tar.bz2#ff4e65768f39040f71cce422799d0f41
 https://conda.anaconda.org/conda-forge/noarch/backports.functools_lru_cache-1.6.4-pyhd8ed1ab_0.tar.bz2#c5b3edc62d6309088f4970b3eaaa65a6
@@ -259,7 +259,7 @@ https://conda.anaconda.org/conda-forge/osx-64/cryptography-36.0.2-py39h1644bb1_1
 https://conda.anaconda.org/conda-forge/noarch/dask-core-2022.4.1-pyhd8ed1ab_0.tar.bz2#5fee12b7b8acb170c47d425d3b069f3c
 https://conda.anaconda.org/conda-forge/noarch/dunamai-1.11.1-pyhd8ed1ab_0.tar.bz2#f1215f57f5294c5da1daf08464f99bef
 https://conda.anaconda.org/conda-forge/noarch/flake8-4.0.1-pyhd8ed1ab_2.tar.bz2#a824bd55ce47e9c637427f730c651231
-https://conda.anaconda.org/conda-forge/osx-64/fonttools-4.32.0-py39h63b48b0_0.tar.bz2#f8f8b694a0443320642bf858c2adf541
+https://conda.anaconda.org/conda-forge/osx-64/fonttools-4.33.0-py39h701faf5_0.tar.bz2#6866872d7d89edbccf2dd44a84ea4af4
 https://conda.anaconda.org/conda-forge/noarch/ghp-import-2.0.2-pyhd8ed1ab_0.tar.bz2#f4ce65728f64a3c1486a9b43ef32a174
 https://conda.anaconda.org/conda-forge/osx-64/harfbuzz-4.2.0-h48644e2_0.tar.bz2#3be0ff0aae5b2e76cff0ca47d3e852f0
 https://conda.anaconda.org/conda-forge/noarch/importlib_metadata-4.11.3-hd8ed1ab_1.tar.bz2#bd6b6ae37c03e68061574d5e32fe5bd1
