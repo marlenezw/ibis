@@ -10,6 +10,7 @@ from packaging.version import parse as vparse
 from pytest import param
 
 import ibis
+from ibis import _
 from ibis import literal as L
 from ibis.expr import datatypes as dt
 from ibis.tests.util import assert_equal
@@ -154,44 +155,18 @@ def test_isnan_isinf(
             L(5.556).radians(),
             math.radians(5.556),
             id='radians',
-            marks=pytest.mark.notimpl(
-                [
-                    "clickhouse",
-                    "dask",
-                    "datafusion",
-                    "duckdb",
-                    "impala",
-                    "mysql",
-                    "pandas",
-                    "postgres",
-                    "pyspark",
-                    "sqlite",
-                ]
-            ),
+            marks=pytest.mark.notimpl(["datafusion", "impala"]),
         ),
         param(
             L(5.556).degrees(),
             math.degrees(5.556),
             id='degrees',
-            marks=pytest.mark.notimpl(
-                [
-                    "clickhouse",
-                    "dask",
-                    "datafusion",
-                    "duckdb",
-                    "impala",
-                    "mysql",
-                    "pandas",
-                    "postgres",
-                    "pyspark",
-                    "sqlite",
-                ]
-            ),
+            marks=pytest.mark.notimpl(["datafusion", "impala"]),
         ),
         param(L(11) % 3, 11 % 3, id='mod'),
     ],
 )
-def test_math_functions_literals(backend, con, alltypes, df, expr, expected):
+def test_math_functions_literals(con, expr, expected):
     result = con.execute(expr)
     if isinstance(result, decimal.Decimal):
         # in case of Impala the result is decimal
@@ -203,13 +178,64 @@ def test_math_functions_literals(backend, con, alltypes, df, expr, expected):
 
 
 @pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        param(L(0.0).acos(), math.acos(0.0), id="acos"),
+        param(L(0.0).asin(), math.asin(0.0), id="asin"),
+        param(L(0.0).atan(), math.atan(0.0), id="atan"),
+        param(L(0.0).atan2(1.0), math.atan2(0.0, 1.0), id="atan2"),
+        param(L(0.0).cos(), math.cos(0.0), id="cos"),
+        param(L(1.0).cot(), math.cos(1.0) / math.sin(1.0), id="cot"),
+        param(L(0.0).sin(), math.sin(0.0), id="sin"),
+        param(L(0.0).tan(), math.tan(0.0), id="tan"),
+    ],
+)
+def test_trig_functions_literals(con, expr, expected):
+    result = con.execute(expr)
+    assert pytest.approx(result) == expected
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected_fn"),
+    [
+        param(_.dc.acos(), np.arccos, id="acos"),
+        param(_.dc.asin(), np.arcsin, id="asin"),
+        param(_.dc.atan(), np.arctan, id="atan"),
+        param(_.dc.atan2(_.dc), lambda c: np.arctan2(c, c), id="atan2"),
+        param(_.dc.cos(), np.cos, id="cos"),
+        param(_.dc.cot(), lambda c: np.cos(c) / np.sin(c), id="cot"),
+        param(_.dc.sin(), np.sin, id="sin"),
+        param(_.dc.tan(), np.tan, id="tan"),
+    ],
+)
+@pytest.mark.notyet(
+    ["datafusion"],
+    reason=(
+        "datafusion implements trig functions but can't easily test them due"
+        " to missing NullIfZero"
+    ),
+)
+def test_trig_functions_columns(backend, expr, alltypes, df, expected_fn):
+    dc_max = df.double_col.max()
+    result = (
+        alltypes.mutate(dc=(_.double_col / dc_max).nullifzero())
+        .select([expr.name("tmp")])
+        .execute()
+        .tmp
+    )
+    expected = expected_fn(
+        (df.double_col / dc_max).replace(0.0, np.nan)
+    ).rename("tmp")
+    backend.assert_series_equal(result, expected)
+
+
+@pytest.mark.parametrize(
     ('expr_fn', 'expected_fn'),
     [
         param(
             lambda t: (-t.double_col).abs(),
             lambda t: (-t.double_col).abs(),
             id='abs-neg',
-            marks=pytest.mark.notimpl(["datafusion"]),
         ),
         param(
             lambda t: t.double_col.abs(),
@@ -536,22 +562,12 @@ def test_random(con):
         ),
     ],
 )
-@pytest.mark.notimpl(
-    [
-        "clickhouse",
-        "duckdb",
-        "datafusion",
-        "impala",
-        "mysql",
-        "postgres",
-        "sqlite",
-    ]
-)
+@pytest.mark.notimpl(["datafusion", "impala"])
 def test_clip(alltypes, df, ibis_func, pandas_func):
     result = ibis_func(alltypes.int_col).execute()
     expected = pandas_func(df.int_col).astype(result.dtype)
     # Names won't match in the Pyspark backend since Pyspark
-    # gives 'tmp' name when executing a ColumnExpr
+    # gives 'tmp' name when executing a Column
     tm.assert_series_equal(result, expected, check_names=False)
 
 

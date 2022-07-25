@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import abc
+import contextlib
+from functools import lru_cache
 from typing import Any, Mapping
 
 import ibis.expr.operations as ops
@@ -21,9 +23,9 @@ class BaseSQLBackend(BaseBackend):
 
     compiler = Compiler
     table_class = ops.DatabaseTable
-    table_expr_class = ir.TableExpr
+    table_expr_class = ir.Table
 
-    def table(self, name: str, database: str | None = None) -> ir.TableExpr:
+    def table(self, name: str, database: str | None = None) -> ir.Table:
         """Construct a table expression.
 
         Parameters
@@ -35,7 +37,7 @@ class BaseSQLBackend(BaseBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         qualified_name = self._fully_qualified_name(name, database)
@@ -47,7 +49,7 @@ class BaseSQLBackend(BaseBackend):
         # XXX
         return name
 
-    def sql(self, query: str) -> ir.TableExpr:
+    def sql(self, query: str) -> ir.Table:
         """Convert a SQL query to an Ibis table expression.
 
         Parameters
@@ -57,7 +59,7 @@ class BaseSQLBackend(BaseBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         # Get the schema by adding a LIMIT 0 on to the end of the query. If
@@ -97,10 +99,14 @@ class BaseSQLBackend(BaseBackend):
             return cursor
         cursor.release()
 
+    @contextlib.contextmanager
+    def _safe_raw_sql(self, *args, **kwargs):
+        yield self.raw_sql(*args, **kwargs)
+
     def execute(
         self,
         expr: ir.Expr,
-        params: Mapping[ir.ScalarExpr, Any] | None = None,
+        params: Mapping[ir.Scalar, Any] | None = None,
         limit: str = 'default',
         **kwargs: Any,
     ):
@@ -126,9 +132,9 @@ class BaseSQLBackend(BaseBackend):
         Returns
         -------
         DataFrame | Series | Scalar
-            * `TableExpr`: pandas.DataFrame
-            * `ColumnExpr`: pandas.Series
-            * `ScalarExpr`: Python scalar value
+            * `Table`: pandas.DataFrame
+            * `Column`: pandas.Series
+            * `Scalar`: Python scalar value
         """
         # TODO Reconsider having `kwargs` here. It's needed to support
         # `external_tables` in clickhouse, but better to deprecate that
@@ -140,9 +146,11 @@ class BaseSQLBackend(BaseBackend):
         )
         sql = query_ast.compile()
         self._log(sql)
-        cursor = self.raw_sql(sql, **kwargs)
+
         schema = self.ast_schema(query_ast, **kwargs)
-        result = self.fetch_from_cursor(cursor, schema)
+
+        with self._safe_raw_sql(sql, **kwargs) as cursor:
+            result = self.fetch_from_cursor(cursor, schema)
 
         if hasattr(getattr(query_ast, 'dml', query_ast), 'result_handler'):
             result = query_ast.dml.result_handler(result)
@@ -176,9 +184,9 @@ class BaseSQLBackend(BaseBackend):
         dml = getattr(query_ast, 'dml', query_ast)
         expr = getattr(dml, 'parent_expr', getattr(dml, 'table_set', None))
 
-        if isinstance(expr, (ir.TableExpr, sch.HasSchema)):
+        if isinstance(expr, (ir.Table, sch.HasSchema)):
             return expr.schema()
-        elif isinstance(expr, ir.ValueExpr):
+        elif isinstance(expr, ir.Value):
             return sch.schema([(expr.get_name(), expr.type())])
         else:
             raise ValueError(
@@ -251,17 +259,20 @@ class BaseSQLBackend(BaseBackend):
 
         statement = f'EXPLAIN {query}'
 
-        cur = self.raw_sql(statement)
-        result = self._get_list(cur)
-        cur.release()
+        with self._safe_raw_sql(statement) as cur:
+            result = self._get_list(cur)
 
         return '\n'.join(['Query:', util.indent(query, 2), '', *result])
 
     @classmethod
-    def has_operation(cls, operation: type[ops.ValueOp]) -> bool:
+    @lru_cache
+    def _get_operations(cls):
         translator = cls.compiler.translator_class
-        op_classes = translator._registry.keys() | translator._rewrites.keys()
-        return operation in op_classes
+        return translator._registry.keys() | translator._rewrites.keys()
+
+    @classmethod
+    def has_operation(cls, operation: type[ops.Value]) -> bool:
+        return operation in cls._get_operations()
 
     def _create_temp_view(self, view, definition):
         raise NotImplementedError(

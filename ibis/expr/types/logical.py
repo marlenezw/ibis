@@ -15,9 +15,9 @@ from ibis.expr.types.numeric import NumericColumn, NumericScalar, NumericValue
 class BooleanValue(NumericValue):
     def ifelse(
         self,
-        true_expr: ir.ValueExpr,
-        false_expr: ir.ValueExpr,
-    ) -> ir.ValueExpr:
+        true_expr: ir.Value,
+        false_expr: ir.Value,
+    ) -> ir.Value:
         """Construct a ternary conditional expression.
 
         Parameters
@@ -29,7 +29,7 @@ class BooleanValue(NumericValue):
 
         Returns
         -------
-        ValueExpr
+        Value
             The value of `true_expr` if `arg` is `True` else `false_expr`
 
         Examples
@@ -73,9 +73,13 @@ class BooleanValue(NumericValue):
     __rxor__ = __xor__
 
     def __invert__(self) -> BooleanValue:
+        return self.negate()
+
+    @staticmethod
+    def __negate_op__():
         from ibis.expr import operations as ops
 
-        return ops.Not(self).to_expr()
+        return ops.Not
 
 
 @public
@@ -86,14 +90,16 @@ class BooleanScalar(NumericScalar, BooleanValue):
 @public
 class BooleanColumn(NumericColumn, BooleanValue):
     def any(self) -> BooleanValue:
+        import ibis.expr.analysis as L
         from ibis.expr import operations as ops
 
-        return ops.Any(self).to_expr()
+        return L._make_any(self, ops.Any)
 
     def notany(self) -> BooleanValue:
+        import ibis.expr.analysis as L
         from ibis.expr import operations as ops
 
-        return ops.NotAny(self).to_expr()
+        return L._make_any(self, ops.NotAny)
 
     def all(self) -> BooleanScalar:
         from ibis.expr import operations as ops

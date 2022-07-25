@@ -11,12 +11,9 @@ import ibis
 import ibis.config
 import ibis.expr.schema as sch
 from ibis.backends.base.sql import BaseSQLBackend
-from ibis.backends.clickhouse.client import (
-    ClickhouseDataType,
-    ClickhouseTable,
-    fully_qualified_re,
-)
+from ibis.backends.clickhouse.client import ClickhouseTable, fully_qualified_re
 from ibis.backends.clickhouse.compiler import ClickhouseCompiler
+from ibis.backends.clickhouse.datatypes import parse, serialize
 from ibis.config import options
 
 _default_compression: str | bool
@@ -52,6 +49,7 @@ class Backend(BaseSQLBackend):
         compression: (
             Literal["lz4", "lz4hc", "quicklz", "zstd"] | bool
         ) = _default_compression,
+        **kwargs: Any,
     ):
         """Create a ClickHouse client for use with Ibis.
 
@@ -92,6 +90,7 @@ class Backend(BaseSQLBackend):
             password=password,
             client_name=client_name,
             compression=compression,
+            **kwargs,
         )
 
     @property
@@ -109,12 +108,12 @@ class Backend(BaseSQLBackend):
         return self.con.connection.database
 
     def list_databases(self, like=None):
-        data, schema = self.raw_sql('SELECT name FROM system.databases')
+        data, _ = self.raw_sql('SELECT name FROM system.databases')
         databases = list(data[0])
         return self._filter_with_like(databases, like)
 
     def list_tables(self, like=None, database=None):
-        data, schema = self.raw_sql('SHOW TABLES')
+        data, _ = self.raw_sql('SHOW TABLES')
         databases = list(data[0])
         return self._filter_with_like(databases, like)
 
@@ -152,13 +151,7 @@ class Backend(BaseSQLBackend):
                     'name': name,
                     'data': df.to_dict('records'),
                     'structure': list(
-                        zip(
-                            schema.names,
-                            [
-                                str(ClickhouseDataType.from_ibis(t))
-                                for t in schema.types
-                            ],
-                        )
+                        zip(schema.names, map(serialize, schema.types))
                     ),
                 }
             )
@@ -175,11 +168,10 @@ class Backend(BaseSQLBackend):
     def fetch_from_cursor(self, cursor, schema):
         data, _ = cursor
         names = schema.names
-        if not len(data):
-            # handle empty resultset
-            return pd.DataFrame([], columns=names)
-
-        df = pd.DataFrame.from_dict(dict(zip(names, data)))
+        if not data:
+            df = pd.DataFrame([], columns=names)
+        else:
+            df = pd.DataFrame.from_dict(dict(zip(names, data)))
         return schema.apply_to(df)
 
     def close(self):
@@ -216,9 +208,8 @@ class Backend(BaseSQLBackend):
         (column_names, types, *_), *_ = self.raw_sql(
             f"DESCRIBE {qualified_name}"
         )
-        return sch.Schema.from_tuples(
-            zip(column_names, map(ClickhouseDataType.parse, types))
-        )
+
+        return sch.Schema.from_tuples(zip(column_names, map(parse, types)))
 
     def set_options(self, options):
         self.con.set_options(options)
@@ -238,7 +229,7 @@ class Backend(BaseSQLBackend):
         )
         [plan] = json.loads(raw_plans)
         fields = [
-            (field["Name"], ClickhouseDataType.parse(field["Type"]))
+            (field["Name"], parse(field["Type"]))
             for field in plan["Plan"]["Header"]
         ]
         return sch.Schema.from_tuples(fields)

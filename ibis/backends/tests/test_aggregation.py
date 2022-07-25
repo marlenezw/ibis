@@ -4,6 +4,8 @@ import pytest
 from pytest import mark, param
 
 import ibis.expr.datatypes as dt
+from ibis import _
+from ibis import literal as L
 from ibis.udf.vectorized import reduction
 
 
@@ -110,6 +112,53 @@ def test_aggregate_grouped(
     backend.assert_frame_equal(result2, expected)
 
 
+@mark.notimpl(
+    [
+        "clickhouse",
+        "datafusion",
+        "duckdb",
+        "impala",
+        "mysql",
+        "postgres",
+        "pyspark",
+        "sqlite",
+    ]
+)
+def test_aggregate_multikey_group_reduction(backend, alltypes, df):
+    """Tests .aggregate() on a multi-key groupby with a reduction operation"""
+
+    @reduction(
+        input_type=[dt.double],
+        output_type=dt.Struct(['mean', 'std'], [dt.double, dt.double]),
+    )
+    def mean_and_std(v):
+        return v.mean(), v.std()
+
+    grouping_key_cols = ['bigint_col', 'int_col']
+
+    expr1 = alltypes.groupby(grouping_key_cols).aggregate(
+        mean_and_std(alltypes['double_col']).destructure()
+    )
+
+    result1 = expr1.execute()
+
+    # Note: Using `reset_index` to get the grouping key as a column
+    expected = (
+        df.groupby(grouping_key_cols)['double_col']
+        .agg(['mean', 'std'])
+        .reset_index()
+    )
+
+    # Row ordering may differ depending on backend, so sort on the
+    # grouping key
+    result1 = result1.sort_values(by=grouping_key_cols).reset_index(drop=True)
+    expected = expected.sort_values(by=grouping_key_cols).reset_index(
+        drop=True
+    )
+
+    backend.assert_frame_equal(result1, expected)
+
+
 @pytest.mark.parametrize(
     ('result_fn', 'expected_fn'),
     [
@@ -119,143 +168,148 @@ def test_aggregate_grouped(
             id='count',
         ),
         param(
-            lambda t, where: t.bool_col.any(),
-            lambda t, where: t.bool_col.any(),
+            lambda t, _: t.bool_col.any(),
+            lambda t, _: t.bool_col.any(),
             id='any',
         ),
         param(
-            lambda t, where: t.bool_col.notany(),
-            lambda t, where: ~t.bool_col.any(),
+            lambda t, _: t.bool_col.notany(),
+            lambda t, _: ~t.bool_col.any(),
             id='notany',
         ),
         param(
-            lambda t, where: -t.bool_col.any(),
-            lambda t, where: ~t.bool_col.any(),
+            lambda t, _: -t.bool_col.any(),
+            lambda t, _: ~t.bool_col.any(),
             id='any_negate',
         ),
         param(
-            lambda t, where: t.bool_col.all(),
-            lambda t, where: t.bool_col.all(),
+            lambda t, _: t.bool_col.all(),
+            lambda t, _: t.bool_col.all(),
             id='all',
         ),
         param(
-            lambda t, where: t.bool_col.notall(),
-            lambda t, where: ~t.bool_col.all(),
+            lambda t, _: t.bool_col.notall(),
+            lambda t, _: ~t.bool_col.all(),
             id='notall',
         ),
         param(
-            lambda t, where: -t.bool_col.all(),
-            lambda t, where: ~t.bool_col.all(),
+            lambda t, _: -t.bool_col.all(),
+            lambda t, _: ~t.bool_col.all(),
             id='all_negate',
         ),
         param(
-            lambda t, where: t.double_col.sum(),
-            lambda t, where: t.double_col.sum(),
+            lambda t, where: t.double_col.sum(where=where),
+            lambda t, where: t.double_col[where].sum(),
             id='sum',
         ),
         param(
-            lambda t, where: t.double_col.mean(),
-            lambda t, where: t.double_col.mean(),
+            lambda t, where: t.double_col.mean(where=where),
+            lambda t, where: t.double_col[where].mean(),
             id='mean',
         ),
         param(
-            lambda t, where: t.double_col.min(),
-            lambda t, where: t.double_col.min(),
+            lambda t, where: t.double_col.min(where=where),
+            lambda t, where: t.double_col[where].min(),
             id='min',
         ),
         param(
-            lambda t, where: t.double_col.max(),
-            lambda t, where: t.double_col.max(),
+            lambda t, where: t.double_col.max(where=where),
+            lambda t, where: t.double_col[where].max(),
             id='max',
         ),
         param(
-            lambda t, where: t.double_col.std(how='sample'),
-            lambda t, where: t.double_col.std(ddof=1),
+            lambda t, where: t.double_col.std(how='sample', where=where),
+            lambda t, where: t.double_col[where].std(ddof=1),
             id='std',
         ),
         param(
-            lambda t, where: t.double_col.var(how='sample'),
-            lambda t, where: t.double_col.var(ddof=1),
+            lambda t, where: t.double_col.var(how='sample', where=where),
+            lambda t, where: t.double_col[where].var(ddof=1),
             id='var',
         ),
         param(
-            lambda t, where: t.double_col.std(how='pop'),
-            lambda t, where: t.double_col.std(ddof=0),
+            lambda t, where: t.double_col.std(how='pop', where=where),
+            lambda t, where: t.double_col[where].std(ddof=0),
             id='std_pop',
         ),
         param(
-            lambda t, where: t.double_col.var(how='pop'),
-            lambda t, where: t.double_col.var(ddof=0),
+            lambda t, where: t.double_col.var(how='pop', where=where),
+            lambda t, where: t.double_col[where].var(ddof=0),
             id='var_pop',
         ),
         param(
-            lambda t, where: t.double_col.cov(t.float_col),
-            lambda t, where: t.double_col.cov(t.float_col),
-            id='covar',
-            marks=[
-                pytest.mark.notimpl(
-                    [
-                        "clickhouse",
-                        "dask",
-                        "duckdb",
-                        "impala",
-                        "mysql",
-                        "pandas",
-                        "postgres",
-                        "pyspark",
-                        "sqlite",
-                    ]
-                )
-            ],
-        ),
-        param(
-            lambda t, where: t.double_col.corr(t.float_col),
-            lambda t, where: t.double_col.corr(t.float_col),
-            id='corr',
-            marks=[
-                pytest.mark.notimpl(
-                    [
-                        "clickhouse",
-                        "dask",
-                        "duckdb",
-                        "impala",
-                        "mysql",
-                        "pandas",
-                        "postgres",
-                        "pyspark",
-                        "sqlite",
-                    ]
-                )
-            ],
-        ),
-        param(
-            lambda t, where: t.string_col.approx_nunique(),
-            lambda t, where: t.string_col.nunique(),
+            lambda t, where: t.string_col.approx_nunique(where=where),
+            lambda t, where: t.string_col[where].nunique(),
             id='approx_nunique',
-            marks=pytest.mark.notyet(['mysql', 'sqlite', 'pyspark']),
         ),
         param(
-            lambda t, where: t.double_col.arbitrary(how='first'),
-            lambda t, where: t.double_col.iloc[0],
+            lambda t, where: t.double_col.arbitrary(how='first', where=where),
+            lambda t, where: t.double_col[where].iloc[0],
             id='arbitrary_first',
             marks=pytest.mark.notimpl(
-                ['impala', 'postgres', 'mysql', 'sqlite', 'duckdb']
+                ['impala', 'postgres', 'mysql', 'sqlite']
             ),
         ),
         param(
-            lambda t, where: t.double_col.arbitrary(how='last'),
-            lambda t, where: t.double_col.iloc[-1],
+            lambda t, where: t.double_col.arbitrary(how='last', where=where),
+            lambda t, where: t.double_col[where].iloc[-1],
             id='arbitrary_last',
             marks=pytest.mark.notimpl(
-                ['impala', 'postgres', 'mysql', 'sqlite', 'duckdb']
+                ['impala', 'postgres', 'mysql', 'sqlite']
             ),
+        ),
+        param(
+            lambda t, where: t.double_col.arbitrary(how='heavy', where=where),
+            lambda t, where: t.double_col[where].iloc[8],
+            id='arbitrary_heavy',
+            # only clickhouse implements this option
+            marks=pytest.mark.notimpl(
+                [
+                    "dask",
+                    "datafusion",
+                    "duckdb",
+                    "impala",
+                    "mysql",
+                    "pandas",
+                    "postgres",
+                    "pyspark",
+                    "sqlite",
+                ],
+            ),
+        ),
+        param(
+            lambda t, where: t.bigint_col.bit_and(where=where),
+            lambda t, where: np.bitwise_and.reduce(t.bigint_col[where].values),
+            id='bit_and',
+            marks=[
+                pytest.mark.notimpl(["dask"]),
+                pytest.mark.notyet(["impala", "pyspark"]),
+            ],
+        ),
+        param(
+            lambda t, where: t.bigint_col.bit_or(where=where),
+            lambda t, where: np.bitwise_or.reduce(t.bigint_col[where].values),
+            id='bit_or',
+            marks=[
+                pytest.mark.notimpl(["dask"]),
+                pytest.mark.notyet(["impala", "pyspark"]),
+            ],
+        ),
+        param(
+            lambda t, where: t.bigint_col.bit_xor(where=where),
+            lambda t, where: np.bitwise_xor.reduce(t.bigint_col[where].values),
+            id='bit_xor',
+            marks=[
+                pytest.mark.notimpl(["dask"]),
+                pytest.mark.notyet(["impala", "pyspark"]),
+            ],
         ),
     ],
 )
 @pytest.mark.parametrize(
     ('ibis_cond', 'pandas_cond'),
     [
-        param(lambda t: None, lambda t: slice(None), id='no_cond'),
+        param(lambda _: None, lambda _: slice(None), id='no_cond'),
         param(
             lambda t: t.string_col.isin(['1', '7']),
             lambda t: t.string_col.isin(['1', '7']),
@@ -265,7 +319,6 @@ def test_aggregate_grouped(
 )
 @mark.notimpl(["datafusion"])
 def test_reduction_ops(
-    backend,
     alltypes,
     df,
     result_fn,
@@ -280,51 +333,201 @@ def test_reduction_ops(
     np.testing.assert_allclose(result, expected)
 
 
-@pytest.mark.notimpl(
-    [
-        "dask",
-        "datafusion",
-        "duckdb",
-        "mysql",
-        "pandas",
-        "postgres",
-        "pyspark",
-        "sqlite",
-    ]
-)
-def test_approx_median(backend, alltypes, df):
-    expr = alltypes.double_col.approx_median()
-    result = expr.execute()
-    assert result is not None
-
-
 @pytest.mark.parametrize(
     ('result_fn', 'expected_fn'),
     [
         param(
-            lambda t: (
-                t.groupby('bigint_col').aggregate(
-                    tmp=lambda t: t.string_col.group_concat(',')
-                )
+            lambda t, where: t.G.cov(t.RBI, where=where, how="pop"),
+            lambda t, where: t.G[where].cov(t.RBI[where], ddof=0),
+            id='covar_pop',
+            marks=[
+                pytest.mark.notimpl(["dask", "datafusion", "pandas"]),
+                pytest.mark.notyet(["mysql", "impala", "sqlite"]),
+            ],
+        ),
+        param(
+            lambda t, where: t.G.cov(t.RBI, where=where, how="sample"),
+            lambda t, where: t.G[where].cov(t.RBI[where], ddof=1),
+            id='covar_samp',
+            marks=[
+                pytest.mark.notimpl(["dask", "datafusion", "pandas"]),
+                pytest.mark.notyet(["mysql", "impala", "sqlite"]),
+            ],
+        ),
+        param(
+            lambda t, where: t.G.corr(t.RBI, where=where, how="pop"),
+            lambda t, where: t.G[where].corr(t.RBI[where]),
+            id='corr_pop',
+            marks=[
+                pytest.mark.notimpl(["dask", "datafusion", "pandas"]),
+                pytest.mark.notyet(
+                    ["clickhouse", "impala", "mysql", "pyspark", "sqlite"]
+                ),
+            ],
+        ),
+        param(
+            lambda t, where: t.G.corr(t.RBI, where=where, how="sample"),
+            lambda t, where: t.G[where].corr(t.RBI[where]),
+            id='corr_samp',
+            marks=[
+                pytest.mark.notimpl(["dask", "datafusion", "pandas"]),
+                pytest.mark.notyet(
+                    ["duckdb", "impala", "mysql", "postgres", "sqlite"]
+                ),
+            ],
+        ),
+        param(
+            lambda t, where: (t.G > 34.0).cov(
+                t.G <= 34.0,
+                where=where,
+                how="pop",
             ),
-            lambda t: (
+            lambda t, where: (t.G[where] > 34.0).cov(
+                t.G[where] <= 34.0, ddof=0
+            ),
+            id='covar_pop_bool',
+            marks=[
+                pytest.mark.notimpl(["dask", "datafusion", "pandas"]),
+                pytest.mark.notyet(["mysql", "impala", "sqlite"]),
+            ],
+        ),
+        param(
+            lambda t, where: (t.G > 34.0).corr(
+                t.G <= 34.0,
+                where=where,
+                how="pop",
+            ),
+            lambda t, where: (t.G[where] > 34.0).corr(t.G[where] <= 34.0),
+            id='corr_pop_bool',
+            marks=[
+                pytest.mark.notimpl(["dask", "datafusion", "pandas"]),
+                pytest.mark.notyet(
+                    ["clickhouse", "impala", "mysql", "pyspark", "sqlite"]
+                ),
+            ],
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ('ibis_cond', 'pandas_cond'),
+    [
+        param(lambda _: None, lambda _: slice(None), id='no_cond'),
+        param(
+            lambda t: t.yearID.isin([2009, 2015]),
+            lambda t: t.yearID.isin([2009, 2015]),
+            id='cond',
+        ),
+    ],
+)
+def test_corr_cov(
+    batting,
+    batting_df,
+    result_fn,
+    expected_fn,
+    ibis_cond,
+    pandas_cond,
+):
+    expr = result_fn(batting, ibis_cond(batting))
+    result = expr.execute()
+
+    expected = expected_fn(batting_df, pandas_cond(batting_df))
+
+    # Backends use different algorithms for computing covariance each with
+    # different amounts of numerical stability.
+    #
+    # This makes a generic, precise and accurate comparison function incredibly
+    # fragile and tedious to write.
+    assert pytest.approx(result) == expected
+
+
+@pytest.mark.notimpl(
+    [
+        "dask",
+        "datafusion",
+        "mysql",
+        "pandas",
+        "postgres",
+        "sqlite",
+    ]
+)
+def test_approx_median(alltypes):
+    expr = alltypes.double_col.approx_median()
+    result = expr.execute()
+    assert isinstance(result, float)
+
+
+@mark.parametrize(
+    ('result_fn', 'expected_fn'),
+    [
+        param(
+            lambda t, where, sep: (
                 t.groupby('bigint_col')
-                .string_col.agg(lambda s: ','.join(s.values))
+                .aggregate(
+                    tmp=lambda t: t.string_col.group_concat(sep, where=where)
+                )
+                .sort_by('bigint_col')
+            ),
+            lambda t, where, sep: (
+                (
+                    t
+                    if isinstance(where, slice)
+                    else t.assign(string_col=t.string_col.where(where))
+                )
+                .groupby('bigint_col')
+                .string_col.agg(
+                    lambda s: (
+                        np.nan if pd.isna(s).all() else sep.join(s.values)
+                    )
+                )
                 .rename('tmp')
+                .sort_index()
                 .reset_index()
             ),
             id='group_concat',
         )
     ],
 )
-@mark.notimpl(["datafusion", "duckdb"])
-def test_group_concat(backend, alltypes, df, result_fn, expected_fn):
-    expr = result_fn(alltypes)
+@mark.parametrize(
+    ("ibis_sep", "pandas_sep"),
+    [
+        param(":", ":", id="const"),
+        param(
+            L(":") + ":",
+            "::",
+            id="expr",
+            marks=mark.notyet(["duckdb", "impala", "mysql", "pyspark"]),
+        ),
+    ],
+)
+@mark.parametrize(
+    ('ibis_cond', 'pandas_cond'),
+    [
+        param(lambda _: None, lambda _: slice(None), id='no_cond'),
+        param(
+            lambda t: t.string_col.isin(['1', '7']),
+            lambda t: t.string_col.isin(['1', '7']),
+            marks=mark.notimpl(["dask", "pandas"]),
+            id='is_in',
+        ),
+    ],
+)
+@mark.notimpl(["datafusion"])
+def test_group_concat(
+    backend,
+    alltypes,
+    df,
+    result_fn,
+    expected_fn,
+    ibis_cond,
+    pandas_cond,
+    ibis_sep,
+    pandas_sep,
+):
+    expr = result_fn(alltypes, ibis_cond(alltypes), ibis_sep)
     result = expr.execute()
+    expected = expected_fn(df, pandas_cond(df), pandas_sep)
 
-    expected = expected_fn(df)
-
-    assert set(result.iloc[:, 1]) == set(expected.iloc[:, 1])
+    backend.assert_frame_equal(result, expected)
 
 
 @pytest.mark.parametrize(
@@ -339,7 +542,7 @@ def test_group_concat(backend, alltypes, df, result_fn, expected_fn):
 )
 @mark.notimpl(["pandas", "dask"])
 @pytest.mark.notyet(["pyspark", "datafusion"])
-def test_topk_op(backend, alltypes, df, result_fn, expected_fn):
+def test_topk_op(alltypes, df, result_fn, expected_fn):
     # TopK expression will order rows by "count" but each backend
     # can have different result for that.
     # Note: Maybe would be good if TopK could order by "count"
@@ -365,7 +568,7 @@ def test_topk_op(backend, alltypes, df, result_fn, expected_fn):
         )
     ],
 )
-@mark.notimpl(["datafusion", "pandas", "dask", "pyspark"])
+@mark.notimpl(["datafusion", "pandas", "dask"])
 def test_topk_filter_op(alltypes, df, result_fn, expected_fn):
     # TopK expression will order rows by "count" but each backend
     # can have different result for that.
@@ -475,3 +678,24 @@ def test_agg_sort(alltypes):
     query = alltypes.aggregate(count=alltypes.count())
     query = query.sort_by(alltypes.year)
     query.execute()
+
+
+def test_filter(backend, alltypes, df):
+    expr = (
+        alltypes[_.string_col == "1"]
+        .mutate(x=L(1, "int64"))
+        .group_by(_.x)
+        .aggregate(_.double_col.sum())
+    )
+
+    # TODO: The pyspark backend doesn't apply schemas to outputs
+    result = expr.execute().astype({"x": "int64"})
+    expected = (
+        df.loc[df.string_col == "1", :]
+        .assign(x=1)
+        .groupby("x")
+        .double_col.sum()
+        .rename("sum")
+        .reset_index()
+    )
+    backend.assert_frame_equal(result, expected, check_like=True)

@@ -14,9 +14,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pandas as pd
 import sqlalchemy as sa
 
 if TYPE_CHECKING:
@@ -70,6 +72,8 @@ class Backend(BaseAlchemyBackend):
             f"sqlite:///{path if path is not None else ':memory:'}"
         )
 
+        sqlite3.register_adapter(pd.Timestamp, lambda value: value.isoformat())
+
         @sa.event.listens_for(engine, "connect")
         def connect(dbapi_connection, connection_record):
             """Register UDFs on connection."""
@@ -104,7 +108,7 @@ class Backend(BaseAlchemyBackend):
             autoload=autoload,
         )
 
-    def table(self, name: str, database: str | None = None) -> ir.TableExpr:
+    def table(self, name: str, database: str | None = None) -> ir.Table:
         """Create a table expression from a table in the SQLite database.
 
         Parameters
@@ -116,7 +120,7 @@ class Backend(BaseAlchemyBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         alch_table = self._get_sqla_table(name, schema=database)

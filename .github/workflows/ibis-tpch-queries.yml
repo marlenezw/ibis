@@ -5,9 +5,11 @@ on:
   push:
     branches:
       - master
+      - "*.x.x"
   pull_request:
     branches:
       - master
+      - "*.x.x"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -20,16 +22,6 @@ jobs:
       - name: checkout
         uses: actions/checkout@v3
 
-      - name: install python
-        uses: actions/setup-python@v3
-        with:
-          python-version: "3.10"
-
-      - run: python -m pip install --upgrade pip click sqlparse
-
-      - name: install ibis
-        run: python -m pip install "ibis-framework[duckdb]"
-
       - name: clone tpc-queries
         uses: actions/checkout@v3
         with:
@@ -37,10 +29,39 @@ jobs:
           path: ./tpc-queries
           ref: master
 
+      - name: install python
+        uses: actions/setup-python@v4
+        id: install_python
+        with:
+          python-version: "3.10"
+
+      - run: python -m pip install --upgrade pip coverage
+
+      - name: install tpc-queries dependencies
+        working-directory: tpc-queries
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -U duckdb>=0.4
+
+      - name: install ibis
+        run: python -m pip install ".[sqlite,duckdb]"
+
       - name: generate tpc-h data
         working-directory: tpc-queries
         run: python -c "import duckdb; con = duckdb.connect('tpch.ddb'); con.execute('CALL dbgen(sf=0.1);')"
 
       - name: run tpc-h queries
         working-directory: tpc-queries
-        run: ./runtpc -i ibis -i duckdb -d 'tpch.ddb' -b 'duckdb'
+        run: coverage run --rcfile=../.coveragerc ./runtpc -i ibis -i duckdb -d 'tpch.ddb' -b 'duckdb'
+
+      - name: generate coverage report
+        working-directory: tpc-queries
+        run: coverage xml --rcfile=../.coveragerc -o ./junit.xml
+
+      - name: upload code coverage
+        if: success()
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./tpc-queries/junit.xml
+          fail_ci_if_error: true
+          flags: tpc,tpch,duckdb,${{ runner.os }},python-${{ steps.install_python.outputs.python-version }}

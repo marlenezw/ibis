@@ -125,33 +125,10 @@ def test_timestamp_cast_noop(alltypes, at, translate):
     assert isinstance(result2, ir.TimestampColumn)
 
     expected1 = at.c.timestamp_col
-    expected2 = sa.func.timezone('UTC', sa.func.to_timestamp(at.c.int_col))
+    expected2 = sa.func.to_timestamp(at.c.int_col)
 
     assert str(translate(result1)) == str(expected1)
     assert str(translate(result2)) == str(expected2)
-
-
-@pytest.mark.parametrize(
-    ('func', 'expected'),
-    [
-        param(operator.methodcaller('year'), 2015, id='year'),
-        param(operator.methodcaller('month'), 9, id='month'),
-        param(operator.methodcaller('day'), 1, id='day'),
-        param(operator.methodcaller('hour'), 14, id='hour'),
-        param(operator.methodcaller('minute'), 48, id='minute'),
-        param(operator.methodcaller('second'), 5, id='second'),
-        param(operator.methodcaller('millisecond'), 359, id='millisecond'),
-        param(lambda x: x.day_of_week.index(), 1, id='day_of_week_index'),
-        param(
-            lambda x: x.day_of_week.full_name(),
-            'Tuesday',
-            id='day_of_week_full_name',
-        ),
-    ],
-)
-def test_simple_datetime_operations(con, func, expected, translate):
-    value = ibis.timestamp('2015-09-01 14:48:05.359')
-    assert con.execute(func(value)) == expected
 
 
 @pytest.mark.parametrize(
@@ -200,31 +177,6 @@ def test_strftime(con, pattern):
         microsecond=359000,
     )
     assert con.execute(value.strftime(pattern)) == raw_value.strftime(pattern)
-
-
-@pytest.mark.parametrize(
-    ('func', 'left', 'right', 'expected'),
-    [
-        param(operator.add, L(3), L(4), 7, id='add'),
-        param(operator.sub, L(3), L(4), -1, id='sub'),
-        param(operator.mul, L(3), L(4), 12, id='mul'),
-        param(operator.truediv, L(12), L(4), 3, id='truediv_no_remainder'),
-        param(operator.pow, L(12), L(2), 144, id='pow'),
-        param(operator.mod, L(12), L(5), 2, id='mod'),
-        param(operator.truediv, L(7), L(2), 3.5, id='truediv_remainder'),
-        param(operator.floordiv, L(7), L(2), 3, id='floordiv'),
-        param(
-            lambda x, y: x.floordiv(y), L(7), 2, 3, id='floordiv_no_literal'
-        ),
-        param(
-            lambda x, y: x.rfloordiv(y), L(2), 7, 3, id='rfloordiv_no_literal'
-        ),
-    ],
-)
-def test_binary_arithmetic(con, func, left, right, expected):
-    expr = func(left, right)
-    result = con.execute(expr)
-    assert result == expected
 
 
 @pytest.mark.parametrize(

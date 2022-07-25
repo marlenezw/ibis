@@ -4,6 +4,7 @@ import re
 
 import pandas as pd
 import pytest
+from pytest import param
 
 import ibis
 import ibis.common.exceptions as com
@@ -14,7 +15,7 @@ import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.types as ir
 from ibis.common.exceptions import ExpressionError, RelationError
-from ibis.expr.types import ColumnExpr, TableExpr
+from ibis.expr.types import Column, Table
 from ibis.tests.expr.mocks import MockAlchemyBackend, MockBackend
 from ibis.tests.util import assert_equal, assert_pickle_roundtrip
 
@@ -63,7 +64,7 @@ def test_columns(con):
 
 def test_view_new_relation(table):
     # For assisting with self-joins and other self-referential operations
-    # where we need to be able to treat instances of the same TableExpr as
+    # where we need to be able to treat instances of the same Table as
     # semantically distinct
     #
     # This thing is not exactly a projection, since it has no semantic
@@ -75,22 +76,12 @@ def test_view_new_relation(table):
     assert roots[0] is tview.op()
 
 
-def test_get_type(table, schema):
-    for k, v in schema:
-        assert table._get_type(k) == dt.dtype(v)
-
-
 def test_getitem_column_select(table):
     for k in table.columns:
         col = table[k]
 
         # Make sure it's the right type
-        assert isinstance(col, ColumnExpr)
-
-        # Ensure we have a field selection with back-reference to the table
-        parent = col.parent()
-        assert isinstance(parent, ops.TableColumn)
-        assert parent.parent() is table
+        assert isinstance(col, Column)
 
 
 def test_getitem_attribute(table):
@@ -99,17 +90,17 @@ def test_getitem_attribute(table):
 
     assert 'a' in dir(table)
 
-    # Project and add a name that conflicts with a TableExpr built-in
+    # Project and add a name that conflicts with a Table built-in
     # attribute
     view = table[[table, table['a'].name('schema')]]
-    assert not isinstance(view.schema, ColumnExpr)
+    assert not isinstance(view.schema, Column)
 
 
 def test_projection(table):
     cols = ['f', 'a', 'h']
 
     proj = table[cols]
-    assert isinstance(proj, TableExpr)
+    assert isinstance(proj, Table)
     assert isinstance(proj.op(), ops.Selection)
 
     assert proj.schema().names == tuple(cols)
@@ -466,10 +457,10 @@ def test_aggregate_no_keys(table):
         table['c'].mean().name('mean(c)'),
     ]
 
-    # A TableExpr, which in SQL at least will yield a table with a single
+    # A Table, which in SQL at least will yield a table with a single
     # row
     result = table.aggregate(metrics)
-    assert isinstance(result, TableExpr)
+    assert isinstance(result, Table)
 
 
 def test_aggregate_keys_basic(table):
@@ -478,10 +469,10 @@ def test_aggregate_keys_basic(table):
         table['c'].mean().name('mean(c)'),
     ]
 
-    # A TableExpr, which in SQL at least will yield a table with a single
+    # A Table, which in SQL at least will yield a table with a single
     # row
     result = table.aggregate(metrics, by=['g'])
-    assert isinstance(result, TableExpr)
+    assert isinstance(result, Table)
 
     # it works!
     repr(result)
@@ -589,8 +580,8 @@ def test_filter_aggregate_pushdown_predicate(table):
 @pytest.mark.parametrize(
     "case_fn",
     [
-        pytest.param(lambda t: t.f.sum(), id="non_boolean"),
-        pytest.param(lambda t: t.f > 2, id="non_scalar"),
+        param(lambda t: t.f.sum(), id="non_boolean"),
+        param(lambda t: t.f > 2, id="non_scalar"),
     ],
 )
 def test_aggregate_post_predicate(table, case_fn):
@@ -1150,21 +1141,71 @@ def t2():
     return ibis.table([('key1', 'string'), ('key2', 'string')], 'bar')
 
 
-def test_simple_existence_predicate(t1, t2):
-    cond = (t1.key1 == t2.key1).any()
+@pytest.mark.parametrize(
+    ("func", "expected_type"),
+    [
+        param(
+            lambda t1, t2: (t1.key1 == t2.key1).any(),
+            ops.UnresolvedExistsSubquery,
+            id="exists",
+        ),
+        param(
+            lambda t1, t2: -(t1.key1 == t2.key1).any(),
+            ops.UnresolvedNotExistsSubquery,
+            id="not_exists",
+        ),
+        param(
+            lambda t1, t2: -(-(t1.key1 == t2.key1).any()),
+            ops.UnresolvedExistsSubquery,
+            id="not_not_exists",
+        ),
+    ],
+)
+def test_unresolved_existence_predicate(t1, t2, func, expected_type):
+    expr = func(t1, t2)
+    assert isinstance(expr, ir.BooleanColumn)
 
-    assert isinstance(cond, ir.BooleanColumn)
-    op = cond.op()
-    assert isinstance(op, ops.Any)
-
-    # it works!
-    expr = t1[cond]
-    assert isinstance(expr.op(), ops.Selection)
+    op = expr.op()
+    assert isinstance(op, expected_type)
 
 
-def test_not_exists_predicate(t1, t2):
-    cond = -((t1.key1 == t2.key1).any())
-    assert isinstance(cond.op(), ops.NotAny)
+@pytest.mark.parametrize(
+    ("func", "expected_type", "expected_negated_type"),
+    [
+        param(
+            lambda t1, t2: t1[(t1.key1 == t2.key1).any()],
+            ops.ExistsSubquery,
+            ops.NotExistsSubquery,
+            id="exists",
+        ),
+        param(
+            lambda t1, t2: t1[-(t1.key1 == t2.key1).any()],
+            ops.NotExistsSubquery,
+            ops.ExistsSubquery,
+            id="not_exists",
+        ),
+        param(
+            lambda t1, t2: t1[-(-(t1.key1 == t2.key1).any())],
+            ops.ExistsSubquery,
+            ops.NotExistsSubquery,
+            id="not_not_exists",
+        ),
+    ],
+)
+def test_resolve_existence_predicate(
+    t1,
+    t2,
+    func,
+    expected_type,
+    expected_negated_type,
+):
+    expr = func(t1, t2)
+    op = expr.op()
+    assert isinstance(op, ops.Selection)
+
+    pred = op.predicates[0]
+    assert isinstance(pred.op(), expected_type)
+    assert isinstance((-pred).op(), expected_negated_type)
 
 
 def test_aggregate_metrics(table):

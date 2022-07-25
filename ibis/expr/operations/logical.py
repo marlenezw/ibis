@@ -1,12 +1,22 @@
+from __future__ import annotations
+
+import abc
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import ibis.expr.types as ir
+
 from public import public
 
+from ibis.common.validators import immutable_property
 from ibis.expr import datatypes as dt
 from ibis.expr import rules as rlz
-from ibis.expr.operations.core import BinaryOp, UnaryOp, ValueOp
+from ibis.expr.operations.core import Binary, Unary, Value
+from ibis.expr.operations.generic import _Negatable
 
 
 @public
-class LogicalBinaryOp(BinaryOp):
+class LogicalBinary(Binary):
     left = rlz.boolean
     right = rlz.boolean
 
@@ -14,29 +24,29 @@ class LogicalBinaryOp(BinaryOp):
 
 
 @public
-class Not(UnaryOp):
+class Not(Unary):
     arg = rlz.boolean
 
     output_dtype = dt.boolean
 
 
 @public
-class And(LogicalBinaryOp):
+class And(LogicalBinary):
     pass
 
 
 @public
-class Or(LogicalBinaryOp):
+class Or(LogicalBinary):
     pass
 
 
 @public
-class Xor(LogicalBinaryOp):
+class Xor(LogicalBinary):
     pass
 
 
 @public
-class Comparison(BinaryOp):
+class Comparison(Binary):
     left = rlz.any
     right = rlz.any
 
@@ -95,7 +105,7 @@ class IdenticalTo(Comparison):
 
 
 @public
-class Between(ValueOp):
+class Between(Value):
     arg = rlz.any
     lower_bound = rlz.any
     upper_bound = rlz.any
@@ -120,7 +130,7 @@ class Between(ValueOp):
 
 
 @public
-class Contains(ValueOp):
+class Contains(Value):
     value = rlz.any
     options = rlz.one_of(
         [
@@ -141,7 +151,7 @@ class NotContains(Contains):
 
 
 @public
-class Where(ValueOp):
+class Where(Value):
 
     """
     Ternary case expression, equivalent to
@@ -155,5 +165,108 @@ class Where(ValueOp):
     true_expr = rlz.any
     false_null_expr = rlz.any
 
-    output_dtype = rlz.dtype_like("true_expr")
+    @immutable_property
+    def output_dtype(self):
+        return rlz.highest_precedence_dtype(
+            [
+                self.true_expr,
+                self.false_null_expr,
+            ]
+        )
+
     output_shape = rlz.shape_like("bool_expr")
+
+
+@public
+class ExistsSubquery(Value, _Negatable):
+    foreign_table = rlz.table
+    predicates = rlz.tuple_of(rlz.boolean)
+
+    output_dtype = dt.boolean
+    output_shape = rlz.Shape.COLUMNAR
+
+    def negate(self) -> NotExistsSubquery:
+        return NotExistsSubquery(*self.args)
+
+
+@public
+class NotExistsSubquery(Value, _Negatable):
+    foreign_table = rlz.table
+    predicates = rlz.tuple_of(rlz.boolean)
+
+    output_dtype = dt.boolean
+    output_shape = rlz.Shape.COLUMNAR
+
+    def negate(self) -> ExistsSubquery:
+        return ExistsSubquery(*self.args)
+
+
+class _UnresolvedSubquery(Value, _Negatable):
+    """An exists subquery whose outer leaf table is unknown.
+
+    Notes
+    -----
+    Consider the following ibis expressions
+
+    >>> t = ibis.table(dict(a="string"))
+    >>> s = ibis.table(dict(a="string"))
+    >>> cond = (t.a == s.a).any()
+
+    Without knowing the table to use as the outer query there are two ways to
+    turn this expression into a SQL `EXISTS` predicate depending on which of
+    `t` or `s` is filtered on.
+
+    Filtering from `t`:
+
+    ```sql
+    SELECT *
+    FROM t
+    WHERE EXISTS (SELECT 1 WHERE t.a = s.a)
+    ```
+
+    Filtering from `s`:
+
+    ```sql
+    SELECT *
+    FROM s
+    WHERE EXISTS (SELECT 1 WHERE t.a = s.a)
+    ```
+
+    Notably the subquery `(SELECT 1 WHERE t.a = s.a)` cannot stand on its own.
+
+    The purpose of `_UnresolvedSubquery` is to capture enough information about
+    an exists predicate such that it can be resolved when predicates are
+    resolved against the outer leaf table when `Selection`s are constructed.
+    """
+
+    tables = rlz.tuple_of(rlz.table)
+    predicates = rlz.tuple_of(rlz.boolean)
+
+    output_dtype = dt.boolean
+    output_shape = rlz.Shape.COLUMNAR
+
+    @abc.abstractmethod
+    def _resolve(
+        self, table: ir.Table
+    ) -> type[ExistsSubquery] | type[NotExistsSubquery]:  # pragma: no cover
+        ...
+
+
+@public
+class UnresolvedExistsSubquery(_UnresolvedSubquery):
+    def negate(self) -> UnresolvedNotExistsSubquery:
+        return UnresolvedNotExistsSubquery(*self.args)
+
+    def _resolve(self, table: ir.Table) -> ExistsSubquery:
+        (foreign_table,) = (t for t in self.tables if not t.equals(table))
+        return ExistsSubquery(foreign_table, self.predicates).to_expr()
+
+
+@public
+class UnresolvedNotExistsSubquery(_UnresolvedSubquery):
+    def negate(self) -> UnresolvedExistsSubquery:
+        return UnresolvedExistsSubquery(*self.args)
+
+    def _resolve(self, table: ir.Table) -> NotExistsSubquery:
+        (foreign_table,) = (t for t in self.tables if not t.equals(table))
+        return NotExistsSubquery(foreign_table, self.predicates).to_expr()

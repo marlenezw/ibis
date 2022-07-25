@@ -1,20 +1,22 @@
+from __future__ import annotations
+
 from public import public
 
 from ibis.common.validators import immutable_property
 from ibis.expr import datatypes as dt
 from ibis.expr import rules as rlz
 from ibis.expr import types as ir
-from ibis.expr.operations.core import ValueOp, distinct_roots
+from ibis.expr.operations.core import Value, distinct_roots
+from ibis.expr.operations.generic import _Negatable
+from ibis.util import deprecated
 
 
 @public
-class Reduction(ValueOp):
-    _reduction = True
-
+class Reduction(Value):
     output_shape = rlz.Shape.SCALAR
 
 
-class Filterable(ValueOp):
+class Filterable(Value):
     where = rlz.optional(rlz.boolean)
 
 
@@ -190,7 +192,7 @@ class Min(Filterable, Reduction):
 
 
 @public
-class HLLCardinality(Filterable, Reduction):
+class ApproxCountDistinct(Filterable, Reduction):
     """Approximate number of unique values using HyperLogLog algorithm.
 
     Impala offers the NDV built-in function for this.
@@ -203,6 +205,12 @@ class HLLCardinality(Filterable, Reduction):
 
 
 @public
+@deprecated(version='4.0', instead='use ApproxCountDistinct')
+class HLLCardinality(ApproxCountDistinct):
+    pass
+
+
+@public
 class GroupConcat(Filterable, Reduction):
     arg = rlz.column(rlz.any)
     sep = rlz.string
@@ -211,7 +219,7 @@ class GroupConcat(Filterable, Reduction):
 
 
 @public
-class CMSMedian(Filterable, Reduction):
+class ApproxMedian(Filterable, Reduction):
     """
     Compute the approximate median of a set of comparable values using the
     Count-Min-Sketch algorithm. Exposed in Impala using APPX_MEDIAN.
@@ -219,6 +227,12 @@ class CMSMedian(Filterable, Reduction):
 
     arg = rlz.column(rlz.any)
     output_dtype = rlz.dtype_like('arg')
+
+
+@public
+@deprecated(version="4.0", instead="use ApproxMedian")
+class CMSMedian(ApproxMedian):
+    pass
 
 
 @public
@@ -250,3 +264,23 @@ class ArrayCollect(Reduction):
     @immutable_property
     def output_dtype(self):
         return dt.Array(self.arg.type())
+
+
+@public
+class Any(Reduction, _Negatable):
+    arg = rlz.column(rlz.boolean)
+
+    output_dtype = dt.boolean
+
+    def negate(self) -> NotAny:
+        return NotAny(*self.args)
+
+
+@public
+class NotAny(Reduction, _Negatable):
+    arg = rlz.column(rlz.boolean)
+
+    output_dtype = dt.boolean
+
+    def negate(self) -> Any:
+        return Any(*self.args)

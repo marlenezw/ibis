@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import datetime
 import functools
-from typing import Iterable, Mapping, Sequence, TypeVar
+from typing import Iterable, Mapping, Sequence
+from typing import Tuple as _Tuple
+from typing import TypeVar
+from typing import Union as _Union
 
 import dateutil.parser
 import numpy as np
@@ -15,9 +18,11 @@ import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.schema as sch
 import ibis.expr.types as ir
-from ibis.expr.random import random  # noqa
+from ibis.backends.base import connect
+from ibis.expr.deferred import Deferred
+from ibis.expr.random import random
 from ibis.expr.schema import Schema
-from ibis.expr.types import (  # noqa
+from ibis.expr.types import (  # noqa: F401
     ArrayColumn,
     ArrayScalar,
     ArrayValue,
@@ -26,7 +31,7 @@ from ibis.expr.types import (  # noqa
     BooleanValue,
     CategoryScalar,
     CategoryValue,
-    ColumnExpr,
+    Column,
     DateColumn,
     DateScalar,
     DateValue,
@@ -76,21 +81,21 @@ from ibis.expr.types import (  # noqa
     PolygonColumn,
     PolygonScalar,
     PolygonValue,
-    ScalarExpr,
+    Scalar,
     StringColumn,
     StringScalar,
     StringValue,
     StructColumn,
     StructScalar,
     StructValue,
-    TableExpr,
+    Table,
     TimeColumn,
     TimeScalar,
     TimestampColumn,
     TimestampScalar,
     TimestampValue,
     TimeValue,
-    ValueExpr,
+    Value,
     array,
     literal,
     map,
@@ -111,11 +116,13 @@ __all__ = (
     'array',
     'case',
     'coalesce',
+    'connect',
     'cross_join',
     'cumulative_window',
     'date',
     'desc',
     'asc',
+    'e',
     'Expr',
     'geo_area',
     'geo_as_binary',
@@ -200,6 +207,7 @@ __all__ = (
     'trailing_window',
     'where',
     'window',
+    '_',
 )
 
 
@@ -213,8 +221,15 @@ T = TypeVar("T")
 
 negate = ir.NumericValue.negate
 
+SupportsSchema = TypeVar(
+    "SupportsSchema",
+    Iterable[_Tuple[str, _Union[str, dt.DataType]]],
+    Mapping[str, dt.DataType],
+    sch.Schema,
+)
 
-def param(type: dt.DataType) -> ir.ScalarExpr:
+
+def param(type: dt.DataType) -> ir.Scalar:
     """Create a deferred parameter of a given type.
 
     Parameters
@@ -224,7 +239,7 @@ def param(type: dt.DataType) -> ir.ScalarExpr:
 
     Returns
     -------
-    ScalarExpr
+    Scalar
         A scalar expression backend by a parameter
 
     Examples
@@ -241,7 +256,7 @@ def param(type: dt.DataType) -> ir.ScalarExpr:
     return ops.ScalarParameter(dt.dtype(type)).to_expr()
 
 
-def sequence(values: Sequence[T | None]) -> ir.ListExpr:
+def sequence(values: Sequence[T | None]) -> ir.ValueList:
     """Wrap a list of Python values as an Ibis sequence type.
 
     Parameters
@@ -251,16 +266,14 @@ def sequence(values: Sequence[T | None]) -> ir.ListExpr:
 
     Returns
     -------
-    ListExpr
+    ValueList
         A list expression
     """
     return ops.ValueList(values).to_expr()
 
 
 def schema(
-    pairs: Iterable[tuple[str, dt.DataType]]
-    | Mapping[str, dt.DataType]
-    | None = None,
+    pairs: SupportsSchema | None = None,
     names: Iterable[str] | None = None,
     types: Iterable[str | dt.DataType] | None = None,
 ) -> sch.Schema:
@@ -270,7 +283,7 @@ def schema(
     ----------
     pairs
         List or dictionary of name, type pairs. Mutually exclusive with `names`
-        and `types`.
+        and `types` arguments.
     names
         Field names. Mutually exclusive with `pairs`.
     types
@@ -278,12 +291,14 @@ def schema(
 
     Examples
     --------
-    >>> from ibis import schema
+    >>> from ibis import schema, Schema
     >>> sc = schema([('foo', 'string'),
     ...              ('bar', 'int64'),
     ...              ('baz', 'boolean')])
-    >>> sc2 = schema(names=['foo', 'bar', 'baz'],
-    ...              types=['string', 'int64', 'boolean'])
+    >>> sc = schema(names=['foo', 'bar', 'baz'],
+    ...             types=['string', 'int64', 'boolean'])
+    >>> sc = schema(dict(foo="string"))
+    >>> sc = schema(Schema(['foo'], ['string']))  # no-op
 
     Returns
     -------
@@ -291,38 +306,34 @@ def schema(
         An ibis schema
     """  # noqa: E501
     if pairs is not None:
-        return Schema.from_dict(dict(pairs))
+        return sch.schema(pairs)
     else:
-        return Schema(names, types)
+        return sch.schema(names, types)
 
 
-_schema = schema
-
-
-def table(schema: sch.Schema, name: str | None = None) -> ir.TableExpr:
-    """Create an unbound table for build expressions without data.
-
+def table(
+    schema: SupportsSchema,
+    name: str | None = None,
+) -> ir.Table:
+    """Create an unbound table for building expressions without data.
 
     Parameters
     ----------
     schema
         A schema for the table
     name
-        Name for the table
+        Name for the table. One is generated if this value is `None`.
 
     Returns
     -------
-    TableExpr
+    Table
         An unbound table expression
     """
-    if not isinstance(schema, Schema):
-        schema = _schema(pairs=schema)
-
-    node = ops.UnboundTable(schema, name=name)
+    node = ops.UnboundTable(sch.schema(schema), name=name)
     return node.to_expr()
 
 
-def desc(expr: ir.ColumnExpr | str) -> ir.SortExpr | ops.DeferredSortKey:
+def desc(expr: ir.Column | str) -> ir.SortExpr | ops.DeferredSortKey:
     """Create a descending sort key from `expr` or column name.
 
     Parameters
@@ -347,7 +358,7 @@ def desc(expr: ir.ColumnExpr | str) -> ir.SortExpr | ops.DeferredSortKey:
         return ops.SortKey(expr, ascending=False).to_expr()
 
 
-def asc(expr: ir.ColumnExpr | str) -> ir.SortExpr | ops.DeferredSortKey:
+def asc(expr: ir.Column | str) -> ir.SortExpr | ops.DeferredSortKey:
     """Create a ascending sort key from `asc` or column name.
 
     Parameters
@@ -399,7 +410,9 @@ def timestamp(
 @timestamp.register(np.floating)
 @timestamp.register(int)
 @timestamp.register(float)
-def _(value, *args, timezone: str | None = None) -> ir.TimestampScalar:
+def _timestamp_from_ymdhms(
+    value, *args, timezone: str | None = None
+) -> ir.TimestampScalar:
     if timezone:
         raise NotImplementedError('timestamp timezone not implemented')
 
@@ -411,22 +424,31 @@ def _(value, *args, timezone: str | None = None) -> ir.TimestampScalar:
 
 
 @timestamp.register(pd.Timestamp)
-def _(value, timezone: str | None = None) -> ir.TimestampScalar:
+def _timestamp_from_timestamp(
+    value, timezone: str | None = None
+) -> ir.TimestampScalar:
     return literal(value, type=dt.Timestamp(timezone=timezone))
 
 
 @timestamp.register(datetime.datetime)
-def _(value, timezone: str | None = None) -> ir.TimestampScalar:
+def _timestamp_from_datetime(
+    value, timezone: str | None = None
+) -> ir.TimestampScalar:
     return literal(value, type=dt.Timestamp(timezone=timezone))
 
 
 @timestamp.register(str)
-def _(value: str, timezone: str | None = None) -> ir.TimestampScalar:
+def _timestamp_from_str(
+    value: str, timezone: str | None = None
+) -> ir.TimestampScalar:
     try:
         value = pd.Timestamp(value, tz=timezone)
     except pd.errors.OutOfBoundsDatetime:
         value = dateutil.parser.parse(value)
-    return literal(value, type=dt.Timestamp(timezone=timezone))
+    dtype = dt.Timestamp(
+        timezone=timezone if timezone is not None else value.tzname()
+    )
+    return literal(value, type=dtype)
 
 
 @functools.singledispatch
@@ -447,23 +469,23 @@ def date(value) -> DateValue:
 
 
 @date.register(str)
-def _(value: str) -> ir.DateScalar:
+def _date_from_str(value: str) -> ir.DateScalar:
     return literal(pd.to_datetime(value).date(), type=dt.date)
 
 
 @date.register(pd.Timestamp)
-def _(value) -> ir.DateScalar:
+def _date_from_timestamp(value) -> ir.DateScalar:
     return literal(value, type=dt.date)
 
 
 @date.register(IntegerColumn)
 @date.register(int)
-def _(year, month, day) -> ir.DateScalar:
+def _date_from_int(year, month, day) -> ir.DateScalar:
     return ops.DateFromYMD(year, month, day).to_expr()
 
 
 @date.register(StringValue)
-def _(value: StringValue) -> DateValue:
+def _date_from_string(value: StringValue) -> DateValue:
     return value.cast(dt.date)
 
 
@@ -473,18 +495,18 @@ def time(value) -> TimeValue:
 
 
 @time.register(str)
-def _(value: str) -> ir.TimeScalar:
+def _time_from_str(value: str) -> ir.TimeScalar:
     return literal(pd.to_datetime(value).time(), type=dt.time)
 
 
 @time.register(IntegerColumn)
 @time.register(int)
-def _(hours, mins, secs) -> ir.TimeScalar:
+def _time_from_int(hours, mins, secs) -> ir.TimeScalar:
     return ops.TimeFromHMS(hours, mins, secs).to_expr()
 
 
 @time.register(StringValue)
-def _(value: StringValue) -> TimeValue:
+def _time_from_string(value: StringValue) -> TimeValue:
     return value.cast(dt.time)
 
 
@@ -633,9 +655,9 @@ def _add_methods(klass, method_table):
 
 def where(
     boolean_expr: ir.BooleanValue,
-    true_expr: ir.ValueExpr,
-    false_null_expr: ir.ValueExpr,
-) -> ir.ValueExpr:
+    true_expr: ir.Value,
+    false_null_expr: ir.Value,
+) -> ir.Value:
     """Return `true_expr` if `boolean_expr` is `True` else `false_null_expr`.
 
     Parameters
@@ -649,16 +671,16 @@ def where(
 
     Returns
     -------
-    ir.ValueExpr
+    ir.Value
         An expression
     """
     op = ops.Where(boolean_expr, true_expr, false_null_expr)
     return op.to_expr()
 
 
-coalesce = ir.AnyValue.coalesce
-greatest = ir.AnyValue.greatest
-least = ir.AnyValue.least
+coalesce = ir.Value.coalesce
+greatest = ir.Value.greatest
+least = ir.Value.least
 
 
 def category_label(
@@ -750,8 +772,10 @@ _category_value_methods = {'label': category_label}
 
 _add_methods(ir.CategoryValue, _category_value_methods)
 
-prevent_rewrite = ir.TableExpr.prevent_rewrite
-aggregate = ir.TableExpr.aggregate
-cross_join = ir.TableExpr.cross_join
-join = ir.TableExpr.join
-asof_join = ir.TableExpr.asof_join
+prevent_rewrite = ir.Table.prevent_rewrite
+aggregate = ir.Table.aggregate
+cross_join = ir.Table.cross_join
+join = ir.Table.join
+asof_join = ir.Table.asof_join
+
+_ = Deferred()

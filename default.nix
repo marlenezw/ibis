@@ -1,5 +1,12 @@
 { python ? "3.10"
 , doCheck ? true
+, backends ? [
+    "dask"
+    "datafusion"
+    "duckdb"
+    "pandas"
+    "sqlite"
+  ]
 }:
 let
   pkgs = import ./nix;
@@ -10,15 +17,6 @@ let
     }:
 
     let
-      backends = [
-        "dask"
-        "datafusion"
-        "duckdb"
-        "pandas"
-        "sqlite"
-      ];
-
-      backendsString = lib.concatStringsSep " " backends;
       buildInputs = with pkgs; [ gdal_2 graphviz-nox proj sqlite ];
       checkInputs = buildInputs;
     in
@@ -29,10 +27,7 @@ let
       src = pkgs.gitignoreSource ./.;
 
       overrides = pkgs.poetry2nix.overrides.withDefaults (
-        import ./poetry-overrides.nix {
-          inherit pkgs;
-          inherit (pkgs) lib stdenv;
-        }
+        import ./poetry-overrides.nix
       );
 
       preConfigure = ''
@@ -52,10 +47,6 @@ let
         find "$tempdir" -type d -exec chmod u+rwx {} +
 
         ln -s "$tempdir" ci/ibis-testing-data
-
-        for backend in ${backendsString}; do
-          python ci/datamgr.py load "$backend"
-        done
       '';
 
       checkPhase = ''

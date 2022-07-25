@@ -6,6 +6,8 @@ from typing import Any, Callable, Mapping, Optional
 import numpy as np
 import pandas as pd
 import pandas.testing as tm
+import pytest
+from filelock import FileLock
 
 import ibis.expr.types as ir
 
@@ -69,6 +71,7 @@ class BackendTest(abc.ABC):
     supported_to_timestamp_units = {'s', 'ms', 'us'}
     supports_floating_modulus = True
     bool_is_int = False
+    supports_structs = True
 
     def __init__(self, data_directory: Path) -> None:
         self.connection = self.connect(data_directory)
@@ -86,6 +89,37 @@ class BackendTest(abc.ABC):
     @abc.abstractmethod
     def connect(data_directory: Path):
         """Return a connection with data loaded from `data_directory`."""
+
+    @staticmethod
+    def _load_data(
+        data_directory: Path, script_directory: Path, **kwargs: Any
+    ) -> None:
+        ...
+
+    @classmethod
+    def load_data(
+        cls,
+        data_dir: Path,
+        script_dir: Path,
+        tmpdir: Path,
+        worker_id: str,
+        **kwargs: Any,
+    ) -> None:
+        """Load testdata from `data_directory` into
+        the backend using scripts in `script_directory`."""
+        # handling for multi-processes pytest
+
+        # get the temp directory shared by all workers
+        root_tmp_dir = tmpdir.getbasetemp()
+        if worker_id != "master":
+            root_tmp_dir = root_tmp_dir.parent
+
+        fn = root_tmp_dir / f"lockfile_{cls.name()}"
+        with FileLock(f"{fn}.lock"):
+            if not fn.exists():
+                cls._load_data(data_dir, script_dir, **kwargs)
+                fn.touch()
+        return cls(data_dir)
 
     @classmethod
     def assert_series_equal(
@@ -110,43 +144,46 @@ class BackendTest(abc.ABC):
         return series.rename(name)
 
     @staticmethod
-    def greatest(
-        f: Callable[..., ir.ValueExpr], *args: ir.ValueExpr
-    ) -> ir.ValueExpr:
+    def greatest(f: Callable[..., ir.Value], *args: ir.Value) -> ir.Value:
         return f(*args)
 
     @staticmethod
-    def least(
-        f: Callable[..., ir.ValueExpr], *args: ir.ValueExpr
-    ) -> ir.ValueExpr:
+    def least(f: Callable[..., ir.Value], *args: ir.Value) -> ir.Value:
         return f(*args)
 
     @property
-    def functional_alltypes(self) -> ir.TableExpr:
+    def functional_alltypes(self) -> ir.Table:
         t = self.connection.table('functional_alltypes')
         if self.bool_is_int:
             return t.mutate(bool_col=t.bool_col == 1)
         return t
 
     @property
-    def batting(self) -> ir.TableExpr:
+    def batting(self) -> ir.Table:
         return self.connection.table('batting')
 
     @property
-    def awards_players(self) -> ir.TableExpr:
+    def awards_players(self) -> ir.Table:
         return self.connection.table('awards_players')
 
     @property
-    def geo(self) -> Optional[ir.TableExpr]:
+    def geo(self) -> Optional[ir.Table]:
         if 'geo' in self.connection.list_tables():
             return self.connection.table('geo')
         return None
 
     @property
+    def struct(self) -> Optional[ir.Table]:
+        if self.supports_structs:
+            return self.connection.table("struct")
+        else:
+            pytest.xfail(
+                f"{self.name()} backend does not support struct types"
+            )
+
+    @property
     def api(self):
         return self.connection
 
-    def make_context(
-        self, params: Optional[Mapping[ir.ValueExpr, Any]] = None
-    ):
+    def make_context(self, params: Optional[Mapping[ir.Value, Any]] = None):
         return self.api.compiler.make_context(params=params)

@@ -13,7 +13,7 @@ pytest.importorskip("sqlalchemy")
 
 def test_table(con):
     table = con.table('functional_alltypes')
-    assert isinstance(table, ir.TableExpr)
+    assert isinstance(table, ir.Table)
 
 
 def test_column_execute(alltypes, df):
@@ -59,9 +59,8 @@ def test_compile_toplevel():
     # it works!
     expr = t.foo.sum()
     result = ibis.sqlite.compile(expr)
-    expected = """\
-SELECT sum(t0.foo) AS sum 
-FROM t0 AS t0"""  # noqa: W291
+    expected = "SELECT sum(t0.foo) AS sum \nFROM t0 AS t0"  # noqa: W291
+
     assert str(result) == expected
 
 

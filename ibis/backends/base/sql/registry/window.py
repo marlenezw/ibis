@@ -183,6 +183,7 @@ def format_window(translator, op, window):
         ops.MinRank,
         ops.NTile,
         ops.PercentRank,
+        ops.CumeDist,
         ops.RowNumber,
     )
 
@@ -250,13 +251,14 @@ def window(translator, expr):
         ops.FirstValue,
         ops.LastValue,
         ops.PercentRank,
+        ops.CumeDist,
         ops.NTile,
     )
 
     _unsupported_reductions = (
-        ops.CMSMedian,
+        ops.ApproxMedian,
         ops.GroupConcat,
-        ops.HLLCardinality,
+        ops.ApproxCountDistinct,
     )
 
     if isinstance(window_op, _unsupported_reductions):
@@ -289,16 +291,6 @@ def window(translator, expr):
         return _expr_transforms[type(window_op)](result)
     else:
         return result
-
-
-def nth_value(translator, expr):
-    op = expr.op()
-    arg, rank = op.args
-
-    arg_formatted = translator.translate(arg)
-    rank_formatted = translator.translate(rank - 1)
-
-    return f'first_value(lag({arg_formatted}, {rank_formatted}))'
 
 
 def shift_like(name):

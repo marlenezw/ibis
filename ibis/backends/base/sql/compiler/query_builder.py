@@ -318,9 +318,9 @@ class Select(DML, Comparable):
         context = self.context
         formatted = []
         for expr in self.select_set:
-            if isinstance(expr, ir.ValueExpr):
+            if isinstance(expr, ir.Value):
                 expr_str = self._translate(expr, named=True)
-            elif isinstance(expr, ir.TableExpr):
+            elif isinstance(expr, ir.Table):
                 # A * selection, possibly prefixed
                 if context.need_aliases(expr):
                     alias = context.get_ref(expr)
@@ -468,25 +468,29 @@ class Union(SetOp):
 
 
 class Intersection(SetOp):
+    _keyword = "INTERSECT"
+
     def _get_keyword_list(self):
-        return ["INTERSECT"] * (len(self.tables) - 1)
+        return [self._keyword] * (len(self.tables) - 1)
 
 
 class Difference(SetOp):
+    _keyword = "EXCEPT"
+
     def _get_keyword_list(self):
-        return ["EXCEPT"] * (len(self.tables) - 1)
+        return [self._keyword] * (len(self.tables) - 1)
 
 
-def flatten_union(table: ir.TableExpr):
+def flatten_union(table: ir.Table):
     """Extract all union queries from `table`.
 
     Parameters
     ----------
-    table : TableExpr
+    table : Table
 
     Returns
     -------
-    Iterable[Union[TableExpr, bool]]
+    Iterable[Union[Table, bool]]
     """
     op = table.op()
     if isinstance(op, ops.Union):
@@ -501,16 +505,16 @@ def flatten_union(table: ir.TableExpr):
     return [table]
 
 
-def flatten(table: ir.TableExpr):
+def flatten(table: ir.Table):
     """Extract all intersection or difference queries from `table`.
 
     Parameters
     ----------
-    table : TableExpr
+    table : Table
 
     Returns
     -------
-    Iterable[Union[TableExpr]]
+    Iterable[Union[Table]]
     """
     op = table.op()
     return list(toolz.concatv(flatten_union(op.left), flatten_union(op.right)))
@@ -523,6 +527,8 @@ class Compiler:
     table_set_formatter_class = TableSetFormatter
     select_class = Select
     union_class = Union
+    intersect_class = Intersection
+    difference_class = Difference
 
     @classmethod
     def make_context(cls, params=None):
@@ -551,11 +557,11 @@ class Compiler:
         # TODO: any setup / teardown DDL statements will need to be done prior
         # to building the result set-generating statements.
         if isinstance(op, ops.Union):
-            query = cls._make_union(cls.union_class, expr, context)
+            query = cls._make_union(expr, context)
         elif isinstance(op, ops.Intersection):
-            query = Intersection(flatten(expr), expr, context=context)
+            query = cls._make_intersect(expr, context)
         elif isinstance(op, ops.Difference):
-            query = Difference(flatten(expr), expr, context=context)
+            query = cls._make_difference(expr, context)
         else:
             query = cls.select_builder_class().to_select(
                 select_class=cls.select_class,
@@ -582,7 +588,7 @@ class Compiler:
         for query in reversed(query_ast.queries):
             if (
                 isinstance(query, Select)
-                and not isinstance(expr, ir.ScalarExpr)
+                and not isinstance(expr, ir.Scalar)
                 and query.table_set is not None
             ):
                 if query.limit is None:
@@ -611,8 +617,8 @@ class Compiler:
     def _generate_teardown_queries(expr, context):
         return []
 
-    @staticmethod
-    def _make_union(union_class, expr, context):
+    @classmethod
+    def _make_union(cls, expr, context):
         # flatten unions so that we can codegen them all at once
         union_info = list(flatten_union(expr))
 
@@ -624,10 +630,22 @@ class Compiler:
         npieces = len(union_info)
         assert npieces >= 3 and npieces % 2 != 0, 'Invalid union expression'
 
-        # 1. every other object starting from 0 is a TableExpr instance
+        # 1. every other object starting from 0 is a Table instance
         # 2. every other object starting from 1 is a bool indicating the type
         #    of union (distinct or not distinct)
         table_exprs, distincts = union_info[::2], union_info[1::2]
-        return union_class(
+        return cls.union_class(
             table_exprs, expr, distincts=distincts, context=context
         )
+
+    @classmethod
+    def _make_intersect(cls, expr, context):
+        # flatten intersections so that we can codegen them all at once
+        table_exprs = list(flatten(expr))
+        return cls.intersect_class(table_exprs, expr, context=context)
+
+    @classmethod
+    def _make_difference(cls, expr, context):
+        # flatten differences so that we can codegen them all at once
+        table_exprs = list(flatten(expr))
+        return cls.difference_class(table_exprs, expr, context=context)

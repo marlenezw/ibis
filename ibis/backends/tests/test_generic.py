@@ -1,15 +1,19 @@
 import decimal
+import importlib
 import io
+import operator
 
 import numpy as np
 import pandas as pd
 import pytest
+import toolz
 from packaging.version import parse as vparse
 from pytest import param
 
 import ibis
 import ibis.common.exceptions as com
 import ibis.util as util
+from ibis import _
 from ibis import literal as L
 
 try:
@@ -191,12 +195,28 @@ def test_notin(backend, alltypes, sorted_df, column, elements):
 @pytest.mark.parametrize(
     ('predicate_fn', 'expected_fn'),
     [
+        param(lambda t: t['bool_col'], lambda df: df['bool_col'], id="no_op"),
         param(
-            lambda t: t['bool_col'],
-            lambda df: df['bool_col'],
+            lambda t: ~t['bool_col'], lambda df: ~df['bool_col'], id="negate"
+        ),
+        param(
+            lambda t: t.bool_col & t.bool_col,
+            lambda df: df.bool_col & df.bool_col,
+            id="and",
             marks=pytest.mark.notimpl(["datafusion"]),
         ),
-        (lambda t: ~t['bool_col'], lambda df: ~df['bool_col']),
+        param(
+            lambda t: t.bool_col | t.bool_col,
+            lambda df: df.bool_col | df.bool_col,
+            id="or",
+            marks=pytest.mark.notimpl(["datafusion"]),
+        ),
+        param(
+            lambda t: t.bool_col ^ t.bool_col,
+            lambda df: df.bool_col ^ df.bool_col,
+            id="xor",
+            marks=pytest.mark.notimpl(["datafusion"]),
+        ),
     ],
 )
 def test_filter(backend, alltypes, sorted_df, predicate_fn, expected_fn):
@@ -258,13 +278,12 @@ def test_case_where(backend, alltypes, df):
     expected['new_col'] = 0
     expected.loc[mask_0, 'new_col'] = 20
     expected.loc[mask_1, 'new_col'] = 10
-    expected['new_col'] = expected['new_col']
 
     backend.assert_frame_equal(result, expected)
 
 
 # TODO: some of these are notimpl (datafusion) others are probably never
-@pytest.mark.notimpl(["datafusion", "mysql", "postgres", "sqlite"])
+@pytest.mark.notimpl(["datafusion", "mysql", "sqlite"])
 @pytest.mark.xfail(
     duckdb is not None and vparse(duckdb.__version__) < vparse("0.3.3"),
     reason="<0.3.3 does not support isnan/isinf properly",
@@ -272,7 +291,7 @@ def test_case_where(backend, alltypes, df):
 def test_select_filter_mutate(backend, alltypes, df):
     """Test that select, filter and mutate are executed in right order.
 
-    Before Pr 2635, try_fusion in analysis.py would fuse these operations
+    Before PR #2635, try_fusion in analysis.py would fuse these operations
     together in a way that the order of the operations were wrong. (mutate
     was executed before filter).
     """
@@ -290,15 +309,17 @@ def test_select_filter_mutate(backend, alltypes, df):
     # Actual test
     t = t[t.columns]
     t = t[~t['float_col'].isnan()]
-    t = t.mutate(float_col=t['float_col'].cast('int32'))
+    t = t.mutate(float_col=t['float_col'].cast('float64'))
     result = t.execute()
 
     expected = df.copy()
     expected.loc[~df['bool_col'], 'float_col'] = None
-    expected = expected[~expected['float_col'].isna()]
-    expected = expected.assign(float_col=expected['float_col'].astype('int32'))
+    expected = expected[~expected['float_col'].isna()].reset_index(drop=True)
+    expected = expected.assign(
+        float_col=expected['float_col'].astype('float64')
+    )
 
-    backend.assert_frame_equal(result, expected)
+    backend.assert_series_equal(result.float_col, expected.float_col)
 
 
 def test_fillna_invalid(alltypes):
@@ -424,3 +445,180 @@ def test_table_info(alltypes):
     assert "Nulls" in info_str
     assert all(str(type) in info_str for type in schema.types)
     assert all(name in info_str for name in schema.names)
+
+
+@pytest.mark.parametrize(
+    ("ibis_op", "pandas_op"),
+    [
+        param(
+            _.string_col.isin([]),
+            lambda df: df.string_col.isin([]),
+            id="isin",
+        ),
+        param(
+            _.string_col.notin([]),
+            lambda df: ~df.string_col.isin([]),
+            id="notin",
+        ),
+        param(
+            (_.string_col.length() * 1).isin([1]),
+            lambda df: (df.string_col.str.len() * 1).isin([1]),
+            id="isin_non_empty",
+        ),
+        param(
+            (_.string_col.length() * 1).notin([1]),
+            lambda df: ~(df.string_col.str.len() * 1).isin([1]),
+            id="notin_non_empty",
+        ),
+    ],
+)
+def test_isin_notin(backend, alltypes, df, ibis_op, pandas_op):
+    expr = alltypes[ibis_op]
+    expected = df.loc[pandas_op(df)].sort_values(["id"]).reset_index(drop=True)
+    result = expr.execute().sort_values(["id"]).reset_index(drop=True)
+    backend.assert_frame_equal(result, expected)
+
+
+@pytest.mark.notyet(
+    ["dask"],
+    reason="dask doesn't support Series as isin/notin argument",
+    raises=NotImplementedError,
+)
+@pytest.mark.notimpl(["datafusion"])
+@pytest.mark.parametrize(
+    ("ibis_op", "pandas_op"),
+    [
+        param(
+            _.string_col.isin(_.string_col),
+            lambda df: df.string_col.isin(df.string_col),
+            id="isin_col",
+        ),
+        param(
+            (_.bigint_col + 1).isin(_.string_col.length() + 1),
+            lambda df: df.bigint_col.add(1).isin(
+                df.string_col.str.len().add(1)
+            ),
+            id="isin_expr",
+        ),
+        param(
+            _.string_col.notin(_.string_col),
+            lambda df: ~df.string_col.isin(df.string_col),
+            id="notin_col",
+        ),
+        param(
+            (_.bigint_col + 1).notin(_.string_col.length() + 1),
+            lambda df: ~(df.bigint_col.add(1)).isin(
+                df.string_col.str.len().add(1)
+            ),
+            id="notin_expr",
+        ),
+    ],
+)
+def test_isin_notin_column_expr(backend, alltypes, df, ibis_op, pandas_op):
+    expr = alltypes[ibis_op].sort_by("id")
+    expected = df[pandas_op(df)].sort_values(["id"]).reset_index(drop=True)
+    result = expr.execute()
+    backend.assert_frame_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected", "op"),
+    [
+        param(True, True, toolz.identity, id="true_noop"),
+        param(False, False, toolz.identity, id="false_noop"),
+        param(True, False, operator.invert, id="true_invert"),
+        param(False, True, operator.invert, id="false_invert"),
+        param(True, False, operator.neg, id="true_negate"),
+        param(False, True, operator.neg, id="false_negate"),
+    ],
+)
+def test_logical_negation_literal(con, expr, expected, op):
+    assert con.execute(op(ibis.literal(expr))) == expected
+
+
+@pytest.mark.parametrize("op", [toolz.identity, operator.invert, operator.neg])
+def test_logical_negation_column(backend, alltypes, df, op):
+    result = op(alltypes["bool_col"]).execute()
+    expected = op(df["bool_col"])
+    backend.assert_series_equal(result, expected, check_names=False)
+
+
+@pytest.mark.notimpl(["datafusion"])
+@pytest.mark.parametrize(
+    ("dtype", "zero", "expected"),
+    [("int64", 0, 1), ("float64", 0.0, 1.0)],
+)
+def test_zeroifnull_literals(con, dtype, zero, expected):
+    assert con.execute(ibis.NA.cast(dtype).zeroifnull()) == zero
+    assert (
+        con.execute(ibis.literal(expected, type=dtype).zeroifnull())
+        == expected
+    )
+
+
+DASK_WITH_FIXED_REPLACE = vparse("2022.01.1")
+
+
+def skip_if_dask_replace_is_broken(backend):
+    if (name := backend.name()) != "dask":
+        return
+    if (
+        version := vparse(importlib.import_module(name).__version__)
+    ) < DASK_WITH_FIXED_REPLACE:
+        pytest.skip(
+            f"{name}@{version} doesn't support this operation with later "
+            "versions of pandas"
+        )
+
+
+@pytest.mark.notimpl(["datafusion"])
+def test_zeroifnull_column(backend, alltypes, df):
+    skip_if_dask_replace_is_broken(backend)
+
+    expr = alltypes.int_col.nullif(1).zeroifnull()
+    result = expr.execute().astype("int32")
+    expected = df.int_col.replace(1, 0).rename("tmp").astype("int32")
+    backend.assert_series_equal(result, expected)
+
+
+@pytest.mark.notimpl(["datafusion"])
+@pytest.mark.broken(["dask"], reason="dask selection with ops.Where is broken")
+def test_where_select(backend, alltypes, df):
+    table = alltypes
+    table = table.select(
+        [
+            "int_col",
+            (
+                ibis.where(table["int_col"] == 0, 42, -1)
+                .cast("int64")
+                .name("where_col")
+            ),
+        ]
+    )
+
+    result = table.execute()
+
+    expected = df.loc[:, ["int_col"]].copy()
+
+    expected['where_col'] = -1
+    expected.loc[expected['int_col'] == 0, 'where_col'] = 42
+
+    backend.assert_frame_equal(result, expected)
+
+
+@pytest.mark.notimpl(["datafusion"])
+def test_where_column(backend, alltypes, df):
+    expr = (
+        ibis.where(alltypes["int_col"] == 0, 42, -1)
+        .cast("int64")
+        .name("where_col")
+    )
+    result = expr.execute()
+
+    expected = pd.Series(
+        np.where(df.int_col == 0, 42, -1),
+        name="where_col",
+        dtype="int64",
+    )
+
+    backend.assert_series_equal(result, expected)

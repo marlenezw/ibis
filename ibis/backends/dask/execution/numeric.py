@@ -14,8 +14,8 @@ from ibis.backends.pandas.core import numeric_types
 
 
 @execute_node.register(ops.Negate, dd.Series)
-def execute_series_negate(op, data, **kwargs):
-    return data.mul(-1)
+def execute_series_negate(_, data, **kwargs):
+    return -data
 
 
 @execute_node.register(ops.Negate, ddgb.SeriesGroupBy)
@@ -34,10 +34,37 @@ def call_numpy_ufunc(func, op, data, **kwargs):
     return func(data)
 
 
-@execute_node.register(ops.UnaryOp, dd.Series)
+@execute_node.register(ops.Unary, dd.Series)
 def execute_series_unary_op(op, data, **kwargs):
     function = getattr(np, type(op).__name__.lower())
     return call_numpy_ufunc(function, op, data, **kwargs)
+
+
+@execute_node.register(ops.Acos, dd.Series)
+def execute_series_acos(_, data, **kwargs):
+    return np.arccos(data)
+
+
+@execute_node.register(ops.Asin, dd.Series)
+def execute_series_asin(_, data, **kwargs):
+    return np.arcsin(data)
+
+
+@execute_node.register(ops.Atan, dd.Series)
+def execute_series_atan(_, data, **kwargs):
+    return np.arctan(data)
+
+
+@execute_node.register(ops.Cot, dd.Series)
+def execute_series_cot(_, data, **kwargs):
+    return np.cos(data) / np.sin(data)
+
+
+@execute_node.register(ops.Atan2, dd.Series, dd.Series)
+@execute_node.register(ops.Atan2, numeric_types, dd.Series)
+@execute_node.register(ops.Atan2, dd.Series, numeric_types)
+def execute_series_atan2(_, y, x, **kwargs):
+    return np.arctan2(y, x)
 
 
 @execute_node.register((ops.Ceil, ops.Floor), dd.Series)

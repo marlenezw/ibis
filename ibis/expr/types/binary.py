@@ -7,11 +7,11 @@ if TYPE_CHECKING:
 
 from public import public
 
-from ibis.expr.types.generic import AnyColumn, AnyScalar, AnyValue
+from ibis.expr.types.generic import Column, Scalar, Value
 
 
 @public
-class BinaryValue(AnyValue):
+class BinaryValue(Value):
     def hashbytes(
         self,
         how: Literal["md5", "sha1", "sha256", "sha512"] = "sha256",
@@ -34,10 +34,10 @@ class BinaryValue(AnyValue):
 
 
 @public
-class BinaryScalar(AnyScalar, BinaryValue):
+class BinaryScalar(Scalar, BinaryValue):
     pass  # noqa: E701,E302
 
 
 @public
-class BinaryColumn(AnyColumn, BinaryValue):
+class BinaryColumn(Column, BinaryValue):
     pass  # noqa: E701,E302

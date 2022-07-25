@@ -1,23 +1,107 @@
 from __future__ import annotations
 
-import importlib
+import importlib.metadata
 import os
 import platform
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, TextIO
 
 import _pytest
 import pandas as pd
+import sqlalchemy as sa
+
+if TYPE_CHECKING:
+    import pyarrow as pa
+
 import pytest
 
 import ibis
 import ibis.util as util
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+TEST_TABLES = {
+    "functional_alltypes": ibis.schema(
+        {
+            "index": "int64",
+            "Unnamed: 0": "int64",
+            "id": "int32",
+            "bool_col": "boolean",
+            "tinyint_col": "int8",
+            "smallint_col": "int16",
+            "int_col": "int32",
+            "bigint_col": "int64",
+            "float_col": "float32",
+            "double_col": "float64",
+            "date_string_col": "string",
+            "string_col": "string",
+            "timestamp_col": "timestamp",
+            "year": "int32",
+            "month": "int32",
+        }
+    ),
+    "diamonds": ibis.schema(
+        {
+            "carat": "float64",
+            "cut": "string",
+            "color": "string",
+            "clarity": "string",
+            "depth": "float64",
+            "table": "float64",
+            "price": "int64",
+            "x": "float64",
+            "y": "float64",
+            "z": "float64",
+        }
+    ),
+    "batting": ibis.schema(
+        {
+            "playerID": "string",
+            "yearID": "int64",
+            "stint": "int64",
+            "teamID": "string",
+            "lgID": "string",
+            "G": "int64",
+            "AB": "int64",
+            "R": "int64",
+            "H": "int64",
+            "X2B": "int64",
+            "X3B": "int64",
+            "HR": "int64",
+            "RBI": "int64",
+            "SB": "int64",
+            "CS": "int64",
+            "BB": "int64",
+            "SO": "int64",
+            "IBB": "int64",
+            "HBP": "int64",
+            "SH": "int64",
+            "SF": "int64",
+            "GIDP": "int64",
+        }
+    ),
+    "awards_players": ibis.schema(
+        {
+            "playerID": "string",
+            "awardID": "string",
+            "yearID": "int64",
+            "lgID": "string",
+            "tie": "string",
+            "notes": "string",
+        }
+    ),
+}
+
+
+@pytest.fixture(scope='session')
+def script_directory() -> Path:
+    """Return the test script directory.
+
+    Returns
+    -------
+    Path
+        Test script directory
+    """
+    return Path(__file__).absolute().parents[2] / "ci"
 
 
 @pytest.fixture(scope='session')
@@ -29,7 +113,7 @@ def data_directory() -> Path:
     Path
         Test data directory
     """
-    root = Path(__file__).absolute().parent.parent.parent
+    root = Path(__file__).absolute().parents[2]
 
     return Path(
         os.environ.get(
@@ -37,6 +121,98 @@ def data_directory() -> Path:
             root / "ci" / "ibis-testing-data",
         )
     )
+
+
+def recreate_database(
+    url: sa.engine.url.URL,
+    database: str,
+    **kwargs: Any,
+) -> None:
+    """Drop the {database} at {url}, if it exists.
+
+    Create a new, blank database with the same name.
+
+    Parameters
+    ----------
+    url : url.sa.engine.url.URL
+        Connection url to the database
+    database : str
+        Name of the database to be dropped.
+    """
+    engine = sa.create_engine(url, **kwargs)
+
+    if url.database is not None:
+        with engine.connect() as conn:
+            conn.execute(f'DROP DATABASE IF EXISTS {database}')
+            conn.execute(f'CREATE DATABASE {database}')
+
+
+def init_database(
+    url: sa.engine.url.URL,
+    database: str,
+    schema: TextIO | None = None,
+    recreate: bool = True,
+    **kwargs: Any,
+) -> sa.engine.Engine:
+    """Initialise {database} at {url} with {schema}.
+
+    If {recreate}, drop the {database} at {url}, if it exists.
+
+    Parameters
+    ----------
+    url : url.sa.engine.url.URL
+        Connection url to the database
+    database : str
+        Name of the database to be dropped
+    schema : TextIO
+        File object containing schema to use
+    recreate : bool
+        If true, drop the database if it exists
+
+    Returns
+    -------
+    sa.engine.Engine for the database created
+    """
+    if recreate:
+        recreate_database(url, database, **kwargs)
+
+    try:
+        url.database = database
+    except AttributeError:
+        url = url.set(database=database)
+
+    engine = sa.create_engine(url, **kwargs)
+
+    if schema:
+        with engine.connect() as conn:
+            for stmt in filter(None, map(str.strip, schema.read().split(';'))):
+                conn.execute(stmt)
+
+    return engine
+
+
+def read_tables(
+    names: Iterable[str],
+    data_dir: Path,
+) -> Iterator[tuple[str, pa.Table]]:
+    """For each csv {names} in {data_dir} return a pyarrow.Table"""
+
+    import pyarrow.csv as pac
+
+    import ibis.backends.pyarrow.datatypes as pa_dt
+
+    for name in names:
+        schema = TEST_TABLES[name]
+        convert_options = pac.ConvertOptions(
+            column_types={
+                name: pa_dt.to_pyarrow_type(type)
+                for name, type in schema.items()
+            }
+        )
+        yield name, pac.read_csv(
+            data_dir / f'{name}.csv',
+            convert_options=convert_options,
+        )
 
 
 def _random_identifier(suffix: str) -> str:
@@ -54,10 +230,15 @@ def _get_backend_names() -> frozenset[str]:
     If a `set` is used, then any in-place modifications to the set
     are visible to every caller of this function.
     """
-    return frozenset(
-        entry_point.name
-        for entry_point in importlib_metadata.entry_points()["ibis.backends"]
-    )
+    import sys
+
+    if sys.version_info < (3, 10):
+        entrypoints = list(importlib.metadata.entry_points()['ibis.backends'])
+    else:
+        entrypoints = list(
+            importlib.metadata.entry_points(group="ibis.backends")
+        )
+    return frozenset(ep.name for ep in entrypoints)
 
 
 def _get_backend_conf(backend_str: str):
@@ -259,34 +440,54 @@ def pytest_runtest_call(item):
 
 
 @pytest.fixture(params=_get_backends_to_test(), scope='session')
-def backend(request, data_directory):
-    """Return an instance of BackendTest."""
+def backend(
+    request, data_directory, script_directory, tmp_path_factory, worker_id
+):
+    """Return an instance of BackendTest, loaded with data."""
+
     cls = _get_backend_conf(request.param)
-    return cls(data_directory)
+    return cls.load_data(
+        data_directory, script_directory, tmp_path_factory, worker_id
+    )
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def con(backend):
-    """
-    Instance of Client, already connected to the db (if applies).
-    """
-    # See #3021
-    # TODO Rename this to `backend` when the existing `backend` is renamed to
-    # `backend_test`, and when `connect` returns `Backend` and not `Client`
+    """Instance of a backend client."""
     return backend.connection
+
+
+def _setup_backend(
+    request, data_directory, script_directory, tmp_path_factory, worker_id
+):
+    if (
+        backend := request.param
+    ) == "duckdb" and platform.system() == "Windows":
+        pytest.xfail(
+            "windows prevents two connections to the same duckdb file "
+            "even in the same process"
+        )
+    else:
+        cls = _get_backend_conf(backend)
+        return cls.load_data(
+            data_directory, script_directory, tmp_path_factory, worker_id
+        )
 
 
 @pytest.fixture(
     params=_get_backends_to_test(discard=("dask", "pandas")),
     scope='session',
 )
-def ddl_backend(request, data_directory):
+def ddl_backend(
+    request, data_directory, script_directory, tmp_path_factory, worker_id
+):
+    """Set up the backends that are SQL-based.
+
+    (sqlite, postgres, mysql, duckdb, datafusion, clickhouse, pyspark, impala)
     """
-    Runs the SQL-ish backends
-    (sqlite, postgres, mysql, datafusion, clickhouse, pyspark, impala)
-    """
-    cls = _get_backend_conf(request.param)
-    return cls(data_directory)
+    return _setup_backend(
+        request, data_directory, script_directory, tmp_path_factory, worker_id
+    )
 
 
 @pytest.fixture(scope='session')
@@ -303,19 +504,16 @@ def ddl_con(ddl_backend):
     ),
     scope='session',
 )
-def alchemy_backend(request, data_directory):
+def alchemy_backend(
+    request, data_directory, script_directory, tmp_path_factory, worker_id
+):
+    """Set up the SQLAlchemy-based backends.
+
+    (sqlite, mysql, postgres, duckdb)
     """
-    Runs the SQLAlchemy-based backends
-    (sqlite, mysql, postgres)
-    """
-    if request.param == "duckdb" and platform.system() == "Windows":
-        pytest.xfail(
-            "windows prevents two connections to the same duckdb file "
-            "even in the same process"
-        )
-    else:
-        cls = _get_backend_conf(request.param)
-        return cls(data_directory)
+    return _setup_backend(
+        request, data_directory, script_directory, tmp_path_factory, worker_id
+    )
 
 
 @pytest.fixture(scope='session')
@@ -330,12 +528,16 @@ def alchemy_con(alchemy_backend):
     params=_get_backends_to_test(keep=("dask", "pandas", "pyspark")),
     scope='session',
 )
-def udf_backend(request, data_directory):
+def udf_backend(
+    request, data_directory, script_directory, tmp_path_factory, worker_id
+):
     """
     Runs the UDF-supporting backends
     """
     cls = _get_backend_conf(request.param)
-    return cls(data_directory)
+    return cls.load_data(
+        data_directory, script_directory, tmp_path_factory, worker_id
+    )
 
 
 @pytest.fixture(scope='session')
@@ -352,7 +554,12 @@ def alltypes(backend):
 
 
 @pytest.fixture(scope='session')
-def sorted_alltypes(backend, alltypes):
+def struct(backend):
+    return backend.struct
+
+
+@pytest.fixture(scope='session')
+def sorted_alltypes(alltypes):
     return alltypes.sort_by('id')
 
 
@@ -382,12 +589,17 @@ def df(alltypes):
 
 
 @pytest.fixture(scope='session')
+def struct_df(struct):
+    return struct.execute()
+
+
+@pytest.fixture(scope='session')
 def udf_df(udf_alltypes):
     return udf_alltypes.execute()
 
 
 @pytest.fixture(scope='session')
-def sorted_df(backend, df):
+def sorted_df(df):
     return df.sort_values('id').reset_index(drop=True)
 
 
@@ -480,7 +692,7 @@ def temp_view(ddl_con) -> str:
 
 
 @pytest.fixture(scope='session')
-def current_data_db(ddl_con, ddl_backend) -> str:
+def current_data_db(ddl_con) -> str:
     """Return current database name."""
     return ddl_con.current_database
 

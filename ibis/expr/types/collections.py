@@ -1,33 +1,33 @@
 from public import public
 
-from ibis.expr.types.generic import AnyColumn, AnyScalar, AnyValue
+from ibis.expr.types.generic import Column, Scalar, Value
 
 
 @public
-class EnumValue(AnyValue):
+class EnumValue(Value):
     pass  # noqa: E701,E302
 
 
 @public
-class EnumScalar(AnyScalar, EnumValue):
+class EnumScalar(Scalar, EnumValue):
     pass  # noqa: E701,E302
 
 
 @public
-class EnumColumn(AnyColumn, EnumValue):
+class EnumColumn(Column, EnumValue):
     pass  # noqa: E701,E302
 
 
 @public
-class SetValue(AnyValue):
+class SetValue(Value):
     pass  # noqa: E701,E302
 
 
 @public
-class SetScalar(AnyScalar, SetValue):
+class SetScalar(Scalar, SetValue):
     pass  # noqa: E701,E302
 
 
 @public
-class SetColumn(AnyColumn, SetValue):
+class SetColumn(Column, SetValue):
     pass  # noqa: E701,E302

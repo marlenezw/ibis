@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import collections
 import itertools
+from functools import cached_property
 
-from cached_property import cached_property
 from public import public
 
 from ibis import util
 from ibis.common import exceptions as com
-from ibis.expr import datatypes as dt
 from ibis.expr import rules as rlz
 from ibis.expr import schema as sch
 from ibis.expr import types as ir
-from ibis.expr.operations.core import Node, ValueOp, distinct_roots
+from ibis.expr.operations.core import Node
+from ibis.expr.operations.logical import ExistsSubquery, NotExistsSubquery
 from ibis.expr.operations.sortkeys import _maybe_convert_sort_keys
 
 _table_names = (f'unbound_table_{i:d}' for i in itertools.count())
@@ -25,9 +25,12 @@ def genname():
 
 @public
 class TableNode(Node):
-    output_type = ir.TableExpr
+    output_type = ir.Table
 
-    def get_type(self, name):
+    @util.deprecated(
+        instead="Use table.schema()[name] instead", version="4.0.0"
+    )
+    def get_type(self, name):  # pragma: no cover
         return self.schema[name]
 
     def aggregate(self, this, metrics, by=None, having=None):
@@ -43,21 +46,14 @@ class TableNode(Node):
             ),
         )
 
-    def is_ancestor(self, other):
-        import ibis.expr.lineage as lin
+    @util.deprecated(version="4.0.0", instead="")
+    def is_ancestor(self, other):  # pragma: no cover
+        from ibis.expr.analysis import _is_ancestor
 
-        if isinstance(other, ir.Expr):
-            other = other.op()
+        return _is_ancestor(self, other)
 
-        if self.equals(other):
-            return True
-
-        fn = lambda e: (lin.proceed, e.op())  # noqa: E731
-        expr = self.to_expr()
-        for child in lin.traverse(fn, expr):
-            if child.equals(other):
-                return True
-        return False
+    def root_tables(self):
+        return [self]
 
 
 @public
@@ -154,12 +150,12 @@ def _clean_join_predicates(left, right, predicates):
 
 
 def _validate_join_predicates(left, right, predicates):
-    from ibis.expr.analysis import fully_originate_from
+    from ibis.expr.analysis import shares_all_roots
 
     # Validate join predicates. Each predicate must be valid jointly when
     # considering the roots of each input table
     for predicate in predicates:
-        if not fully_originate_from(predicate, [left, right]):
+        if not shares_all_roots(predicate, [left, right]):
             raise com.RelationError(
                 'The expression {!r} does not fully '
                 'originate from dependencies of the table '
@@ -182,21 +178,14 @@ class Join(TableNode):
             left=left, right=right, predicates=predicates, **kwargs
         )
 
-    # could use @promoter here
     @property
     def schema(self):
         # For joins retaining both table schemas, merge them together here
         return self.left.schema().append(self.right.schema())
 
+    @util.deprecated(version="4.0", instead="")
     def has_schema(self):
         return not set(self.left.columns) & set(self.right.columns)
-
-    def root_tables(self):
-        if util.all_of([self.left.op(), self.right.op()], (Join, Selection)):
-            # Unraveling is not possible
-            return [self.left.op(), self.right.op()]
-        else:
-            return distinct_roots(self.left, self.right)
 
 
 @public
@@ -309,11 +298,9 @@ class Limit(TableNode):
     def schema(self):
         return self.table.schema()
 
+    @util.deprecated(version="4.0", instead="")
     def has_schema(self):
         return self.table.op().has_schema()
-
-    def root_tables(self):
-        return [self]
 
 
 @public
@@ -323,12 +310,6 @@ class SelfReference(TableNode, sch.HasSchema):
     @property
     def schema(self):
         return self.table.schema()
-
-    def root_tables(self):
-        # The dependencies of this operation are not walked, which makes the
-        # table expression holding this relationally distinct from other
-        # expressions, so things like self-joins are possible
-        return [self]
 
     def blocks(self):
         return True
@@ -345,7 +326,6 @@ class Selection(TableNode, sch.HasSchema):
                     rlz.column_from("table"),
                     rlz.function_of("table"),
                     rlz.any,
-                    rlz.named_literal,
                 )
             )
         ),
@@ -386,28 +366,35 @@ class Selection(TableNode, sch.HasSchema):
         default=(),
     )
 
-    def __init__(self, table, selections, predicates, sort_keys):
-        from ibis.expr.analysis import FilterValidator
+    def __init__(self, table, selections, predicates, sort_keys, **kwargs):
+        from ibis.expr.analysis import shares_all_roots, shares_some_roots
 
-        # Need to validate that the column expressions are compatible with the
-        # input table; this means they must either be scalar expressions or
-        # array expressions originating from the same root table expression
-        dependent_exprs = selections + sort_keys
-        table._assert_valid(dependent_exprs)
+        if not shares_all_roots(selections + sort_keys, table):
+            raise com.RelationError(
+                "Selection expressions don't fully originate from "
+                "dependencies of the table expression."
+            )
 
-        # Validate predicates
-        validator = FilterValidator([table])
-        validator.validate_all(predicates)
+        for predicate in predicates:
+            if not shares_some_roots(predicate, table):
+                raise com.RelationError(
+                    "Predicate doesn't share any roots with table"
+                )
 
         super().__init__(
             table=table,
             selections=selections,
             predicates=predicates,
             sort_keys=sort_keys,
+            **kwargs,
         )
 
         # Validate no overlapping columns in schema
         assert self.schema
+
+    @cached_property
+    def _projection(self):
+        return self.__class__(table=self.table, selections=self.selections)
 
     @cached_property
     def schema(self):
@@ -426,10 +413,10 @@ class Selection(TableNode, sch.HasSchema):
                 for name in struct_type.names:
                     names.append(name)
                     types.append(struct_type[name])
-            elif isinstance(projection, ir.ValueExpr):
+            elif isinstance(projection, ir.Value):
                 names.append(projection.get_name())
                 types.append(projection.type())
-            elif isinstance(projection, ir.TableExpr):
+            elif isinstance(projection, ir.Table):
                 schema = projection.schema()
                 names.extend(schema.names)
                 types.extend(schema.types)
@@ -439,16 +426,16 @@ class Selection(TableNode, sch.HasSchema):
     def blocks(self):
         return bool(self.selections)
 
-    def substitute_table(self, table_expr):
+    @util.deprecated(instead="instantiate Selection directly", version="4.0.0")
+    def substitute_table(self, table_expr):  # pragma: no cover
         return Selection(table_expr, self.selections)
 
-    def root_tables(self):
-        return [self]
-
-    def can_add_filters(self, wrapped_expr, predicates):
+    @util.deprecated(instead="", version="4.0.0")
+    def can_add_filters(self, wrapped_expr, predicates):  # pragma: no cover
         pass
 
-    def empty_or_equal(self, other) -> bool:
+    @util.deprecated(instead="", version="4.0.0")
+    def empty_or_equal(self, other) -> bool:  # pragma: no cover
         for field in "selections", "sort_keys", "predicates":
             selfs = getattr(self, field)
             others = getattr(other, field)
@@ -461,7 +448,8 @@ class Selection(TableNode, sch.HasSchema):
                 return False
         return True
 
-    def compatible_with(self, other):
+    @util.deprecated(instead="", version="4.0.0")
+    def compatible_with(self, other):  # pragma: no cover
         # self and other are equivalent except for predicates, selections, or
         # sort keys any of which is allowed to be empty. If both are not empty
         # then they must be equal
@@ -473,8 +461,6 @@ class Selection(TableNode, sch.HasSchema):
 
         return self.table.equals(other.table) and self.empty_or_equal(other)
 
-    # Operator combination / fusion logic
-
     def aggregate(self, this, metrics, by=None, having=None):
         if len(self.selections) > 0:
             return Aggregation(this, metrics, by=by, having=having)
@@ -483,11 +469,13 @@ class Selection(TableNode, sch.HasSchema):
             return helper.get_result()
 
     def sort_by(self, expr, sort_exprs):
+        from ibis.expr.analysis import shares_all_roots
+
         resolved_keys = _maybe_convert_sort_keys(
             [self.table, expr], sort_exprs
         )
         if not self.blocks():
-            if self.table._is_valid(resolved_keys):
+            if shares_all_roots(resolved_keys, self.table):
                 return Selection(
                     self.table,
                     self.selections,
@@ -539,23 +527,18 @@ class AggregateSelection:
             return self._plain_subquery()
 
     def _pushdown_exprs(self, exprs):
-        import ibis.expr.analysis as L
+        from ibis.expr.analysis import shares_all_roots, sub_for
 
-        # exit early if there's nothing to push down
-        if not exprs:
-            return True, []
-
-        resolved = self.op.table._resolve(exprs)
         subbed_exprs = []
+        for expr in util.promote_list(exprs):
+            expr = self.op.table._ensure_expr(expr)
+            subbed = sub_for(expr, [(self.parent, self.op.table)])
+            subbed_exprs.append(subbed)
 
-        valid = False
-        if resolved:
-            for x in util.promote_list(resolved):
-                subbed = L.sub_for(x, [(self.parent, self.op.table)])
-                subbed_exprs.append(subbed)
-            valid = self.op.table._is_valid(subbed_exprs)
+        if subbed_exprs:
+            valid = shares_all_roots(subbed_exprs, self.op.table)
         else:
-            valid = False
+            valid = True
 
         return valid, subbed_exprs
 
@@ -586,7 +569,6 @@ class Aggregation(TableNode, sch.HasSchema):
                     rlz.reduction,
                     rlz.scalar(rlz.any),
                     rlz.tuple_of(rlz.scalar(rlz.any)),
-                    rlz.named_literal,
                 )
             ),
             flatten=True,
@@ -654,15 +636,20 @@ class Aggregation(TableNode, sch.HasSchema):
     )
 
     def __init__(self, table, metrics, by, having, predicates, sort_keys):
-        from ibis.expr.analysis import FilterValidator
+        from ibis.expr.analysis import shares_all_roots, shares_some_roots
 
         # All non-scalar refs originate from the input table
-        all_exprs = metrics + by + having + sort_keys
-        table._assert_valid(all_exprs)
+        if not shares_all_roots(metrics + by + having + sort_keys, table):
+            raise com.RelationError(
+                "Selection expressions don't fully originate from "
+                "dependencies of the table expression."
+            )
 
-        # Validate predicates
-        validator = FilterValidator([table])
-        validator.validate_all(predicates)
+        # invariant due to Aggregation and AggregateSelection requiring a valid
+        # Selection
+        assert all(
+            shares_some_roots(predicate, table) for predicate in predicates
+        )
 
         if not by:
             sort_keys = tuple()
@@ -681,7 +668,10 @@ class Aggregation(TableNode, sch.HasSchema):
     def blocks(self):
         return True
 
-    def substitute_table(self, table_expr):
+    @util.deprecated(
+        instead="instantiate Aggregation directly", version="4.0.0"
+    )
+    def substitute_table(self, table_expr):  # pragma: no cover
         return Aggregation(
             table_expr, self.metrics, by=self.by, having=self.having
         )
@@ -706,10 +696,12 @@ class Aggregation(TableNode, sch.HasSchema):
         return sch.Schema(names, types)
 
     def sort_by(self, expr, sort_exprs):
+        from ibis.expr.analysis import shares_all_roots
+
         resolved_keys = _maybe_convert_sort_keys(
             [self.table, expr], sort_exprs
         )
-        if self.table._is_valid(resolved_keys):
+        if shares_all_roots(resolved_keys, self.table):
             return Aggregation(
                 self.table,
                 self.metrics,
@@ -749,24 +741,6 @@ class Distinct(TableNode, sch.HasSchema):
 
     def blocks(self):
         return True
-
-
-@public
-class ExistsSubquery(ValueOp):
-    foreign_table = rlz.table
-    predicates = rlz.tuple_of(rlz.boolean)
-
-    output_dtype = dt.boolean
-    output_shape = rlz.Shape.COLUMNAR
-    output_type = ir.ExistsExpr
-
-
-@public
-class NotExistsSubquery(Node):
-    foreign_table = rlz.table
-    predicates = rlz.tuple_of(rlz.boolean)
-
-    output_type = ir.ExistsExpr
 
 
 @public
@@ -838,10 +812,10 @@ class SQLStringView(PhysicalTable):
 
 
 def _dedup_join_columns(
-    expr: ir.TableExpr,
+    expr: ir.Table,
     *,
-    left: ir.TableExpr,
-    right: ir.TableExpr,
+    left: ir.Table,
+    right: ir.Table,
     suffixes: tuple[str, str],
 ):
     right_columns = frozenset(right.columns)
@@ -868,3 +842,6 @@ def _dedup_join_columns(
         for column in right.columns
     ]
     return expr.projection(left_projections + right_projections)
+
+
+public(ExistsSubquery=ExistsSubquery, NotExistsSubquery=NotExistsSubquery)

@@ -17,7 +17,7 @@ it as a filter in the database query.
 In some cases, data need to be trimmed in ``post_execute``.
 
 Note: In order to use the feature we implemented here, there must be a
-column of Timestamp type, and named as 'time' in TableExpr. And this 'time'
+column of Timestamp type, and named as 'time' in Table. And this 'time'
 column should be preserved across the expression tree. If 'time' column is
 dropped then execution will result in error.
 See ``execute_database_table_client`` in ``generic.py``.
@@ -63,9 +63,9 @@ def compute_time_context_asof_join(
     return new_timecontexts
 
 
-@compute_time_context.register(ops.WindowOp)
+@compute_time_context.register(ops.Window)
 def compute_time_context_window(
-    op: ops.WindowOp,
+    op: ops.Window,
     scope: Scope,
     clients: List[BaseBackend],
     timecontext: Optional[TimeContext] = None,

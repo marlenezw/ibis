@@ -10,6 +10,7 @@ from pyspark.sql.column import Column
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
+    import ibis.expr.operations as ops
 
 import ibis.common.exceptions as com
 import ibis.expr.schema as sch
@@ -170,21 +171,21 @@ class Backend(BaseSQLBackend):
         self,
         expr: ir.Expr,
         timecontext: Mapping | None = None,
-        params: Mapping[ir.ScalarExpr, Any] | None = None,
+        params: Mapping[ir.Scalar, Any] | None = None,
         limit: str = 'default',
         **kwargs: Any,
     ) -> Any:
         """Execute an expression."""
-        if isinstance(expr, types.TableExpr):
+        if isinstance(expr, types.Table):
             return self.compile(expr, timecontext, params, **kwargs).toPandas()
-        elif isinstance(expr, types.ColumnExpr):
+        elif isinstance(expr, types.Column):
             # expression must be named for the projection
             if not expr.has_name():
                 expr = expr.name("tmp")
             return self.compile(
                 expr.to_projection(), timecontext, params, **kwargs
             ).toPandas()[expr.get_name()]
-        elif isinstance(expr, types.ScalarExpr):
+        elif isinstance(expr, types.Scalar):
             compiled = self.compile(expr, timecontext, params, **kwargs)
             if isinstance(compiled, Column):
                 # attach result column to a fake DataFrame and
@@ -229,7 +230,7 @@ class Backend(BaseSQLBackend):
             raise com.IbisInputError(str(e)) from e
         return jtable
 
-    def table(self, name: str, database: str | None = None) -> ir.TableExpr:
+    def table(self, name: str, database: str | None = None) -> ir.Table:
         """Return a table expression from a table or view in the database.
 
         Parameters
@@ -241,7 +242,7 @@ class Backend(BaseSQLBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             Table named `name` from `database`
         """
         jtable = self._get_jtable(name, database)
@@ -377,7 +378,7 @@ class Backend(BaseSQLBackend):
     def create_table(
         self,
         table_name: str,
-        obj: ir.TableExpr | pd.DataFrame | None = None,
+        obj: ir.Table | pd.DataFrame | None = None,
         schema: sch.Schema | None = None,
         database: str | None = None,
         force: bool = False,
@@ -443,7 +444,7 @@ class Backend(BaseSQLBackend):
     def create_view(
         self,
         name: str,
-        expr: ir.TableExpr,
+        expr: ir.Table,
         database: str | None = None,
         can_exist: bool = False,
         temporary: bool = False,
@@ -538,7 +539,7 @@ class Backend(BaseSQLBackend):
     def insert(
         self,
         table_name: str,
-        obj: ir.TableExpr | pd.DataFrame | None = None,
+        obj: ir.Table | pd.DataFrame | None = None,
         database: str | None = None,
         overwrite: bool = False,
         values: Any | None = None,
@@ -582,3 +583,6 @@ class Backend(BaseSQLBackend):
             self._fully_qualified_name(name, database), maybe_noscan
         )
         return self.raw_sql(stmt)
+
+    def has_operation(cls, operation: type[ops.Value]) -> bool:
+        return operation in PySparkExprTranslator._registry.keys()

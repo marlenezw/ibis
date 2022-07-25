@@ -253,7 +253,7 @@ def trim_window_result(
     return indexed_subset[name]
 
 
-@execute_node.register(ops.WindowOp, pd.Series, win.Window)
+@execute_node.register(ops.Window, pd.Series, win.Window)
 def execute_window_op(
     op,
     data,
@@ -284,7 +284,7 @@ def execute_window_op(
             op, timecontext=timecontext, clients=clients, scope=scope
         )
         # timecontext is the original time context required by parent node
-        # of this WindowOp, while adjusted_timecontext is the adjusted context
+        # of this Window, while adjusted_timecontext is the adjusted context
         # of this Window, since we are doing a manual execution here, use
         # adjusted_timecontext in later execution phases
         adjusted_timecontext = arg_timecontexts[0]
@@ -581,3 +581,8 @@ def execute_series_group_by_percent_rank(op, data, **kwargs):
 def execute_series_percent_rank(op, data, **kwargs):
     # TODO(phillipc): Handle ORDER BY
     return data.rank(method="min", ascending=True).sub(1).div(len(data) - 1)
+
+
+@execute_node.register(ops.CumeDist, (pd.Series, SeriesGroupBy))
+def execute_series_group_by_cume_dist(op, data, **kwargs):
+    return data.rank(method='min', ascending=True, pct=True)

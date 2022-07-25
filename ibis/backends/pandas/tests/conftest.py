@@ -33,6 +33,19 @@ class TestConf(BackendTest, RoundHalfToEven):
                 'awards_players': pd.read_csv(
                     str(data_directory / 'awards_players.csv')
                 ),
+                'struct': pd.DataFrame(
+                    {
+                        'abc': [
+                            {'a': 1.0, 'b': 'banana', 'c': 2},
+                            {'a': 2.0, 'b': 'apple', 'c': 3},
+                            {'a': 3.0, 'b': 'orange', 'c': 4},
+                            {'a': pd.NA, 'b': 'banana', 'c': 2},
+                            {'a': 2.0, 'b': pd.NA, 'c': 3},
+                            pd.NA,
+                            {'a': 3.0, 'b': 'orange', 'c': pd.NA},
+                        ]
+                    }
+                ),
                 'array_types': pd.DataFrame(
                     [
                         (
@@ -41,6 +54,7 @@ class TestConf(BackendTest, RoundHalfToEven):
                             [1.0, 2.0, 3.0],
                             'a',
                             1.0,
+                            [[], [np.int64(1), 2, 3], None],
                         ),
                         (
                             [4, 5],
@@ -48,6 +62,7 @@ class TestConf(BackendTest, RoundHalfToEven):
                             [4.0, 5.0],
                             'a',
                             2.0,
+                            [],
                         ),
                         (
                             [6, None],
@@ -55,6 +70,7 @@ class TestConf(BackendTest, RoundHalfToEven):
                             [6.0, np.nan],
                             'a',
                             3.0,
+                            [None, [], None],
                         ),
                         (
                             [None, 1, None],
@@ -62,6 +78,7 @@ class TestConf(BackendTest, RoundHalfToEven):
                             [],
                             'b',
                             4.0,
+                            [[1], [2], [], [3, 4, 5]],
                         ),
                         (
                             [2, None, 3],
@@ -69,6 +86,7 @@ class TestConf(BackendTest, RoundHalfToEven):
                             np.nan,
                             'b',
                             5.0,
+                            None,
                         ),
                         (
                             [4, None, None, 5],
@@ -76,21 +94,29 @@ class TestConf(BackendTest, RoundHalfToEven):
                             [4.0, np.nan, np.nan, 5.0],
                             'c',
                             6.0,
+                            [[1, 2, 3]],
                         ),
                     ],
-                    columns=["x", "y", "z", "grouper", "scalar_column"],
+                    columns=[
+                        "x",
+                        "y",
+                        "z",
+                        "grouper",
+                        "scalar_column",
+                        "multi_dim",
+                    ],
                 ),
             }
         )
 
     @property
-    def functional_alltypes(self) -> ir.TableExpr:
+    def functional_alltypes(self) -> ir.Table:
         return self.connection.table("functional_alltypes")
 
     @property
-    def batting(self) -> ir.TableExpr:
+    def batting(self) -> ir.Table:
         return self.connection.table("batting")
 
     @property
-    def awards_players(self) -> ir.TableExpr:
+    def awards_players(self) -> ir.Table:
         return self.connection.table("awards_players")

@@ -62,23 +62,10 @@ def test_timestamp_cast_noop(
     assert translate(result) == sqla_compile(expected)
 
 
-TIMESTAMP_CONSTANT = ibis.literal('2015-09-01 14:48:05.359').cast('timestamp')
-
-
-@pytest.mark.parametrize(
-    ('expr', 'expected'),
-    [
-        (TIMESTAMP_CONSTANT.strftime('%Y%m%d'), '20150901'),
-        (TIMESTAMP_CONSTANT.year(), 2015),
-        (TIMESTAMP_CONSTANT.month(), 9),
-        (TIMESTAMP_CONSTANT.day(), 1),
-        (TIMESTAMP_CONSTANT.hour(), 14),
-        (TIMESTAMP_CONSTANT.minute(), 48),
-        (TIMESTAMP_CONSTANT.second(), 5),
-        (TIMESTAMP_CONSTANT.millisecond(), 359),
-    ],
-)
-def test_timestamp_functions(con, expr, expected):
+def test_timestamp_functions(con):
+    value = ibis.timestamp('2015-09-01 14:48:05.359')
+    expr = value.strftime('%Y%m%d')
+    expected = '20150901'
     assert con.execute(expr) == expected
 
 
@@ -556,7 +543,7 @@ def test_interactive_repr_shows_error(alltypes):
     # #591. Doing this in SQLite because so many built-in functions are not
     # available
 
-    expr = alltypes.double_col.approx_nunique()
+    expr = alltypes.double_col.approx_median()
 
     with config.option_context('interactive', True):
         result = repr(expr)

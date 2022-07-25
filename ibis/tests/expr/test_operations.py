@@ -87,7 +87,7 @@ def test_instance_of_operation():
 
 
 def test_array_input():
-    class MyOp(ops.ValueOp):
+    class MyOp(ops.Value):
         value = rlz.value(dt.Array(dt.double))
         output_dtype = rlz.dtype_like('value')
         output_shape = rlz.shape_like('value')
@@ -100,23 +100,23 @@ def test_array_input():
 
 
 def test_custom_table_expr():
-    class MyTableExpr(ir.TableExpr):
+    class MyTable(ir.Table):
         pass
 
     class SpecialTable(ops.DatabaseTable):
         @property
         def output_type(self):
-            return MyTableExpr
+            return MyTable
 
     con = ibis.pandas.connect({})
     node = SpecialTable('foo', ibis.schema([('a', 'int64')]), con)
     expr = node.to_expr()
-    assert isinstance(expr, MyTableExpr)
+    assert isinstance(expr, MyTable)
 
 
 @pytest.fixture(scope='session')
 def dummy_op():
-    class DummyOp(ops.ValueOp):
+    class DummyOp(ops.Value):
         arg = rlz.any
 
     return DummyOp
@@ -130,3 +130,25 @@ def test_too_many_args_not_allowed(dummy_op):
 def test_too_few_args_not_allowed(dummy_op):
     with pytest.raises(TypeError):
         dummy_op()
+
+
+def test_operation_class_aliases():
+    assert ops.ValueOp is ops.Value
+    assert ops.UnaryOp is ops.Unary
+    assert ops.BinaryOp is ops.Binary
+    assert ops.WindowOp is ops.Window
+    assert ops.AnalyticOp is ops.Analytic
+
+
+def test_expression_class_aliases():
+    assert ir.TableExpr is ir.Table
+    assert ir.AnalyticExpr is ir.Analytic
+    assert ir.ExistsExpr is ir.Exists
+    assert ir.TopKExpr is ir.TopK
+    assert ir.ValueExpr is ir.Value
+    assert ir.ScalarExpr is ir.Scalar
+    assert ir.ColumnExpr is ir.Column
+    assert ir.AnyValue is ir.Value
+    assert ir.AnyScalar is ir.Scalar
+    assert ir.AnyColumn is ir.Column
+    assert ir.ListExpr is ir.ValueList

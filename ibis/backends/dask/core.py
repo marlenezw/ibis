@@ -46,7 +46,7 @@ different times during the loop.
 First, at the beginning of the main execution loop, ``compute_time_context`` is
 called. This function computes time contexts, and pass them to all children of
 the current node. These time contexts could be used in later steps to get data.
-This is essential for time series TableExpr, and related operations that adjust
+This is essential for time series Table, and related operations that adjust
 time context, such as window, asof_join, etc.
 
 By default, this function simply pass the unchanged time context to all
@@ -85,7 +85,7 @@ Let's say you want to take a three day rolling average, and you want to include
 data in the result for a few reasons, one of which is that it would break the
 contract of window functions: given N rows of input there are N rows of output.
 
-Defining a ``post_execute`` rule for :class:`~ibis.expr.operations.WindowOp`
+Defining a ``post_execute`` rule for :class:`~ibis.expr.operations.Window`
 allows you to encode such logic. One might want to implement this using
 :class:`~ibis.expr.operations.ScalarParameter`, in which case the ``scope``
 passed to ``post_execute`` would be the bound values passed in at the time the

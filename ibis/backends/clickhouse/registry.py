@@ -1,11 +1,13 @@
 from datetime import date, datetime
 from io import StringIO
 
-import ibis
 import ibis.common.exceptions as com
+import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.types as ir
 import ibis.util as util
+from ibis.backends.base.sql.registry import binary_infix
+from ibis.backends.clickhouse.datatypes import serialize
 from ibis.backends.clickhouse.identifiers import quote_identifier
 
 # TODO(kszucs): should inherit operation registry from the base compiler
@@ -19,12 +21,11 @@ def _alias(translator, expr):
 
 
 def _cast(translator, expr):
-    from ibis.backends.clickhouse.client import ClickhouseDataType
-
     op = expr.op()
-    arg, target = op.args
+    arg = op.arg
+    target = op.to
     arg_ = translator.translate(arg)
-    type_ = str(ClickhouseDataType.from_ibis(target, nullable=False))
+    type_ = serialize(target)
 
     return f'CAST({arg_!s} AS {type_!s})'
 
@@ -36,27 +37,20 @@ def _between(translator, expr):
 
 
 def _negate(translator, expr):
-    arg = expr.op().args[0]
-    if isinstance(expr, ir.BooleanValue):
-        arg_ = translator.translate(arg)
-        return f'NOT {arg_!s}'
-    else:
-        arg_ = _parenthesize(translator, arg)
-        return f'-{arg_!s}'
+    return f"-{_parenthesize(translator, expr.op().arg)}"
 
 
 def _not(translator, expr):
-    return 'NOT {}'.format(*map(translator.translate, expr.op().args))
+    return f"NOT {_parenthesize(translator, expr.op().arg)}"
 
 
 def _parenthesize(translator, expr):
     op = expr.op()
-    op_klass = type(op)
 
     # function calls don't need parens
     what_ = translator.translate(expr)
-    if (op_klass in _binary_infix_ops) or (op_klass in _unary_ops):
-        return f'({what_!s})'
+    if isinstance(op, (*_binary_infix_ops.keys(), *_unary_ops.keys())):
+        return f"({what_})"
     else:
         return what_
 
@@ -136,7 +130,12 @@ def _array_slice_op(translator, expr):
 
 def _agg(func):
     def formatter(translator, expr):
-        return _aggregate(translator, func, *expr.op().args)
+        op = expr.op()
+        where = getattr(op, "where", None)
+        args = tuple(
+            arg for arg in op.args if arg is not None and arg is not where
+        )
+        return _aggregate(translator, func, *args, where=where)
 
     return formatter
 
@@ -145,23 +144,19 @@ def _agg_variance_like(func):
     variants = {'sample': f'{func}Samp', 'pop': f'{func}Pop'}
 
     def formatter(translator, expr):
-        arg, how, where = expr.op().args
-        return _aggregate(translator, variants[how], arg, where)
+        *args, how, where = expr.op().args
+        return _aggregate(translator, variants[how], *args, where=where)
 
     return formatter
 
 
-def _binary_infix_op(infix_sym):
-    def formatter(translator, expr):
-        op = expr.op()
-
-        left, right = op.args
-        left_ = _parenthesize(translator, left)
-        right_ = _parenthesize(translator, right)
-
-        return f'{left_!s} {infix_sym!s} {right_!s}'
-
-    return formatter
+def _corr(translator, expr):
+    op = expr.op()
+    if op.how == "pop":
+        raise ValueError(
+            "ClickHouse only implements `sample` correlation coefficient"
+        )
+    return _aggregate(translator, "corr", op.left, op.right, where=op.where)
 
 
 def _call(translator, func, *args):
@@ -169,11 +164,11 @@ def _call(translator, func, *args):
     return f'{func!s}({args_!s})'
 
 
-def _aggregate(translator, func, arg, where=None):
+def _aggregate(translator, func, *args, where=None):
     if where is not None:
-        return _call(translator, func + 'If', arg, where)
+        return _call(translator, f"{func}If", *args, where)
     else:
-        return _call(translator, func, arg)
+        return _call(translator, func, *args)
 
 
 def _xor(translator, expr):
@@ -375,12 +370,30 @@ def _literal(translator, expr):
     elif isinstance(expr, ir.IntervalValue):
         return _interval_format(translator, expr)
     elif isinstance(expr, ir.TimestampValue):
+        func = "toDateTime"
+        args = []
+
         if isinstance(value, datetime):
-            if value.microsecond != 0:
-                msg = 'Unsupported subsecond accuracy {}'
-                raise ValueError(msg.format(value))
-            value = value.strftime('%Y-%m-%d %H:%M:%S')
-        return f"toDateTime('{value!s}')"
+            fmt = "%Y-%m-%dT%H:%M:%S"
+
+            if micros := value.microsecond:
+                func = "toDateTime64"
+                fmt += ".%f"
+
+            args.append(value.strftime(fmt))
+            if micros % 1000:
+                args.append(6)
+            elif micros // 1000:
+                args.append(3)
+        else:
+            args.append(str(value))
+
+        if (timezone := expr.type().timezone) is not None:
+            args.append(timezone)
+
+        joined_args = ", ".join(map(repr, args))
+        return f"{func}({joined_args})"
+
     elif isinstance(expr, ir.DateValue):
         if isinstance(value, date):
             value = value.strftime('%Y-%m-%d')
@@ -589,12 +602,21 @@ def _string_ilike(translator, expr):
 
 
 def _group_concat(translator, expr):
-    arg, sep, where = expr.op().args
-    if where is not None:
-        arg = where.ifelse(arg, ibis.NA)
-    return 'arrayStringConcat(groupArray({}), {})'.format(
-        *map(translator.translate, (arg, sep))
-    )
+    op = expr.op()
+
+    arg = translator.translate(op.arg)
+    sep = translator.translate(op.sep)
+
+    translated_args = [arg]
+    func = "groupArray"
+
+    if (where := op.where) is not None:
+        func += "If"
+        translated_args.append(translator.translate(where))
+
+    call = f"{func}({', '.join(translated_args)})"
+    expr = f"arrayStringConcat({call}, {sep})"
+    return f"CASE WHEN empty({call}) THEN NULL ELSE {expr} END"
 
 
 def _string_right(translator, expr):
@@ -604,27 +626,81 @@ def _string_right(translator, expr):
     return f"substring({arg}, -({nchars}))"
 
 
+def _cotangent(translator, expr):
+    op = expr.op()
+    arg = translator.translate(op.arg)
+    return f"cos({arg}) / sin({arg})"
+
+
+def _bit_agg(func):
+    def compile(translator, expr):
+        op = expr.op()
+        raw_arg = op.arg
+        arg = translator.translate(raw_arg)
+        if not isinstance((type := raw_arg.type()), dt.UnsignedInteger):
+            nbits = type._nbytes * 8
+            arg = f"reinterpretAsUInt{nbits}({arg})"
+
+        if (where := op.where) is not None:
+            return f"{func}If({arg}, {translator.translate(where)})"
+        else:
+            return f"{func}({arg})"
+
+    return compile
+
+
+def _array_column(translator, expr):
+    args = ", ".join(map(translator.translate, expr.op().cols))
+    return f"[{args}]"
+
+
+def _struct_column(translator, expr):
+    args = ", ".join(map(translator.translate, expr.op().values))
+    # ClickHouse struct types cannot be nullable
+    # (non-nested fields can be nullable)
+    struct_type = serialize(expr.type()(nullable=False))
+    return f"CAST(({args}) AS {struct_type})"
+
+
+def _clip(translator, expr):
+    op = expr.op()
+    arg = translator.translate(op.arg)
+
+    if (upper := op.upper) is not None:
+        arg = f"least({translator.translate(upper)}, {arg})"
+
+    if (lower := op.lower) is not None:
+        arg = f"greatest({translator.translate(lower)}, {arg})"
+
+    return arg
+
+
+def _struct_field(translator, expr):
+    op = expr.op()
+    return f"{translator.translate(op.arg)}.`{op.field}`"
+
+
 # TODO: clickhouse uses different string functions
 #       for ascii and utf-8 encodings,
 
 _binary_infix_ops = {
     # Binary operations
-    ops.Add: _binary_infix_op('+'),
-    ops.Subtract: _binary_infix_op('-'),
-    ops.Multiply: _binary_infix_op('*'),
-    ops.Divide: _binary_infix_op('/'),
+    ops.Add: binary_infix.binary_infix_op('+'),
+    ops.Subtract: binary_infix.binary_infix_op('-'),
+    ops.Multiply: binary_infix.binary_infix_op('*'),
+    ops.Divide: binary_infix.binary_infix_op('/'),
     ops.Power: _fixed_arity('pow', 2),
-    ops.Modulus: _binary_infix_op('%'),
+    ops.Modulus: binary_infix.binary_infix_op('%'),
     # Comparisons
-    ops.Equals: _binary_infix_op('='),
-    ops.NotEquals: _binary_infix_op('!='),
-    ops.GreaterEqual: _binary_infix_op('>='),
-    ops.Greater: _binary_infix_op('>'),
-    ops.LessEqual: _binary_infix_op('<='),
-    ops.Less: _binary_infix_op('<'),
+    ops.Equals: binary_infix.binary_infix_op('='),
+    ops.NotEquals: binary_infix.binary_infix_op('!='),
+    ops.GreaterEqual: binary_infix.binary_infix_op('>='),
+    ops.Greater: binary_infix.binary_infix_op('>'),
+    ops.LessEqual: binary_infix.binary_infix_op('<='),
+    ops.Less: binary_infix.binary_infix_op('<'),
     # Boolean comparisons
-    ops.And: _binary_infix_op('AND'),
-    ops.Or: _binary_infix_op('OR'),
+    ops.And: binary_infix.binary_infix_op('AND'),
+    ops.Or: binary_infix.binary_infix_op('OR'),
     ops.Xor: _xor,
 }
 
@@ -649,17 +725,32 @@ operation_registry = {
     ops.Ln: _unary('log'),
     ops.Log2: _unary('log2'),
     ops.Log10: _unary('log10'),
+    ops.Acos: _unary("acos"),
+    ops.Asin: _unary("asin"),
+    ops.Atan: _unary("atan"),
+    ops.Atan2: _fixed_arity("atan2", 2),
+    ops.Cos: _unary("cos"),
+    ops.Cot: _cotangent,
+    ops.Sin: _unary("sin"),
+    ops.Tan: _unary("tan"),
+    ops.Pi: _fixed_arity("pi", 0),
+    ops.E: _fixed_arity("e", 0),
     # Unary aggregates
     ops.CMSMedian: _agg('median'),
+    ops.ApproxMedian: _agg('median'),
     # TODO: there is also a `uniq` function which is the
     #       recommended way to approximate cardinality
     ops.HLLCardinality: _agg('uniqHLL12'),
+    ops.ApproxCountDistinct: _agg('uniqHLL12'),
     ops.Mean: _agg('avg'),
     ops.Sum: _agg('sum'),
     ops.Max: _agg('max'),
     ops.Min: _agg('min'),
+    ops.ArrayCollect: _agg('groupArray'),
     ops.StandardDev: _agg_variance_like('stddev'),
     ops.Variance: _agg_variance_like('var'),
+    ops.Covariance: _agg_variance_like('covar'),
+    ops.Correlation: _corr,
     ops.GroupConcat: _group_concat,
     ops.Count: _agg('count'),
     ops.CountDistinct: _agg('uniq'),
@@ -719,18 +810,18 @@ operation_registry = {
     ops.Least: _varargs('least'),
     ops.Where: _fixed_arity('if', 3),
     ops.Between: _between,
-    ops.Contains: _binary_infix_op('IN'),
-    ops.NotContains: _binary_infix_op('NOT IN'),
     ops.SimpleCase: _simple_case,
     ops.SearchedCase: _searched_case,
     ops.TableColumn: _table_column,
     ops.TableArrayView: _table_array_view,
-    ops.DateAdd: _binary_infix_op('+'),
-    ops.DateSub: _binary_infix_op('-'),
-    ops.DateDiff: _binary_infix_op('-'),
-    ops.TimestampAdd: _binary_infix_op('+'),
-    ops.TimestampSub: _binary_infix_op('-'),
-    ops.TimestampDiff: _binary_infix_op('-'),
+    ops.DateAdd: binary_infix.binary_infix_op('+'),
+    ops.DateSub: binary_infix.binary_infix_op('-'),
+    ops.DateDiff: binary_infix.binary_infix_op('-'),
+    ops.Contains: binary_infix.contains("IN"),
+    ops.NotContains: binary_infix.contains("NOT IN"),
+    ops.TimestampAdd: binary_infix.binary_infix_op('+'),
+    ops.TimestampSub: binary_infix.binary_infix_op('-'),
+    ops.TimestampDiff: binary_infix.binary_infix_op('-'),
     ops.TimestampFromUNIX: _timestamp_from_unix,
     ops.ExistsSubquery: _exists_subquery,
     ops.NotExistsSubquery: _exists_subquery,
@@ -739,6 +830,17 @@ operation_registry = {
     ops.ArrayConcat: _fixed_arity('arrayConcat', 2),
     ops.ArrayRepeat: _array_repeat_op,
     ops.ArraySlice: _array_slice_op,
+    ops.Unnest: _unary("arrayJoin"),
+    ops.BitAnd: _bit_agg("groupBitAnd"),
+    ops.BitOr: _bit_agg("groupBitOr"),
+    ops.BitXor: _bit_agg("groupBitXor"),
+    ops.Degrees: _unary("degrees"),
+    ops.Radians: _unary("radians"),
+    ops.Strftime: _fixed_arity("formatDateTime", 2),
+    ops.ArrayColumn: _array_column,
+    ops.Clip: _clip,
+    ops.StructField: _struct_field,
+    ops.StructColumn: _struct_column,
 }
 
 
@@ -787,10 +889,11 @@ _undocumented_operations = {
 
 
 _unsupported_ops_list = [
-    ops.WindowOp,
+    ops.Window,
     ops.DecimalPrecision,
     ops.DecimalScale,
     ops.BaseConvert,
+    ops.CumeDist,
     ops.CumulativeSum,
     ops.CumulativeMin,
     ops.CumulativeMax,

@@ -8,7 +8,6 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 import toolz
-from cached_property import cached_property
 
 from ibis.common.exceptions import IbisInputError
 from ibis.common.grounds import Comparable
@@ -141,7 +140,7 @@ class Window(Comparable):
 
         self._validate_frame()
 
-    @cached_property
+    @functools.cached_property
     def _hash(self) -> int:
         return hash(
             (
@@ -248,11 +247,12 @@ class Window(Comparable):
                 )
 
     def bind(self, table):
-        import ibis.expr.operations as ops
-
         # Internal API, ensure that any unresolved expr references (as strings,
         # say) are bound to the table being windowed
-        groups = table._resolve(self._group_by)
+
+        import ibis.expr.operations as ops
+
+        groups = [table._ensure_expr(expr) for expr in self._group_by]
         sorts = [
             ops.sortkeys._to_sort_key(k, table=table) for k in self._order_by
         ]
@@ -489,7 +489,7 @@ def trailing_range_window(preceding, order_by, group_by=None) -> Window:
     )
 
 
-def propagate_down_window(expr: ir.ValueExpr, window: Window):
+def propagate_down_window(expr: ir.Value, window: Window):
     import ibis.expr.operations as ops
 
     op = expr.op()
@@ -497,10 +497,10 @@ def propagate_down_window(expr: ir.ValueExpr, window: Window):
     clean_args = []
     unchanged = True
     for arg in op.args:
-        if isinstance(arg, ir.Expr) and not isinstance(op, ops.WindowOp):
+        if isinstance(arg, ir.Expr) and not isinstance(op, ops.Window):
             new_arg = propagate_down_window(arg, window)
-            if isinstance(new_arg.op(), ops.AnalyticOp):
-                new_arg = ops.WindowOp(new_arg, window).to_expr()
+            if isinstance(new_arg.op(), ops.Analytic):
+                new_arg = ops.Window(new_arg, window).to_expr()
             if arg is not new_arg:
                 unchanged = False
             arg = new_arg

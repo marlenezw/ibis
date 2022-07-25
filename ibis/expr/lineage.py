@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import collections
 import itertools
-
-from toolz import compose, identity
+from typing import Any, Callable, Iterable, Iterator
 
 import ibis.expr.operations as ops
 import ibis.expr.types as ir
@@ -9,9 +10,10 @@ import ibis.expr.types as ir
 
 class Container:
 
-    __slots__ = ('data',)
+    __slots__ = "data", "visitor"
 
-    def __init__(self, data):
+    def __init__(self, data, visitor: Callable | None = None) -> None:
+        self.visitor = (lambda val: val) if visitor is None else visitor
         self.data = collections.deque(self.visitor(data))
 
     def append(self, item):
@@ -23,10 +25,6 @@ class Container:
     def get(self):
         raise NotImplementedError('Child classes must implement get')
 
-    @property
-    def visitor(self):
-        raise NotImplementedError('Child classes must implement visitor')
-
     def extend(self, items):
         return self.data.extend(items)
 
@@ -37,14 +35,13 @@ class Stack(Container):
     Implements the `Container` API for depth-first graph traversal.
     """
 
-    __slots__ = ('data',)
+    __slots__ = ()
+
+    def __init__(self, data):
+        super().__init__(data, visitor=lambda data: reversed(list(data)))
 
     def get(self):
         return self.data.pop()
-
-    @property
-    def visitor(self):
-        return compose(reversed, list)
 
 
 class Queue(Container):
@@ -53,14 +50,10 @@ class Queue(Container):
     Implements the `Container` API for breadth-first graph traversal.
     """
 
-    __slots__ = ('data',)
+    __slots__ = ()
 
     def get(self):
         return self.data.popleft()
-
-    @property
-    def visitor(self):
-        return identity
 
 
 def _get_args(op, name):
@@ -95,7 +88,7 @@ def lineage(expr, container=Stack):
     ----------
     expr : Expr
         An ibis expression. It must be an instance of
-        :class:`ibis.expr.types.ColumnExpr`.
+        :class:`ibis.expr.types.Column`.
     container : Container, {Stack, Queue}
         Stack for depth-first traversal, and Queue for breadth-first.
         Depth-first will reach root table nodes before continuing on to other
@@ -108,8 +101,8 @@ def lineage(expr, container=Stack):
     node : Expr
         A column and its dependencies
     """
-    if not isinstance(expr, ir.ColumnExpr):
-        raise TypeError('Input expression must be an instance of ColumnExpr')
+    if not isinstance(expr, ir.Column):
+        raise TypeError('Input expression must be an instance of Column')
 
     c = container([(expr, expr.get_name() if expr.has_name() else None)])
 
@@ -137,22 +130,29 @@ proceed = True
 halt = False
 
 
-def traverse(fn, expr, type=ir.Expr, container=Stack):
+def traverse(
+    fn: Callable[[ir.Expr], tuple[bool | Iterable, Any]],
+    expr: ir.Expr | Iterable[ir.Expr],
+    type: type = ir.Expr,
+    container: Container = Stack,
+    dedup: bool = True,
+) -> Iterator[Any]:
     """Utility for generic expression tree traversal
 
     Parameters
     ----------
-    fn : Callable[[ir.Expr], Tuple[Union[Boolean, Iterable], Any]]
-        This function will be applied on each expressions, it must
-        return a tuple. The first element of the tuple controls the
-        traversal, and the second is the result if its not None.
-    expr: ir.Expr
+    fn
+        A function applied on each expression. The first element of the tuple
+        controls the traversal, and the second is the result if its not `None`.
+    expr
         The traversable expression or a list of expressions.
-    type: Type
-        Only the instances if this expression type gets traversed.
-    container: Union[Stack, Queue], default Stack
-        Defines the traversing order. Use Stack for depth-first and
-        Queue for breadth-first search.
+    type
+        Only the instances if this type are traversed.
+    container
+        Defines the traversal order. Use `Stack` for depth-first order and
+        `Queue` for breadth-first order.
+    dedup
+        Whether to allow expression traversal more than once
     """
     args = expr if isinstance(expr, collections.abc.Iterable) else [expr]
     todo = container(arg for arg in args if isinstance(arg, type))
@@ -161,10 +161,12 @@ def traverse(fn, expr, type=ir.Expr, container=Stack):
     while todo:
         expr = todo.get()
         op = expr.op()
-        if op in seen:
-            continue
-        else:
-            seen.add(op)
+
+        if dedup:
+            if op in seen:
+                continue
+            else:
+                seen.add(op)
 
         control, result = fn(expr)
         if result is not None:

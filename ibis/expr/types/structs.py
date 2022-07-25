@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import collections
 import itertools
-from typing import TYPE_CHECKING, Iterable, Mapping
+from functools import cached_property
+from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 
 from public import public
 
-from ibis.expr.types.generic import AnyColumn, AnyScalar, AnyValue, literal
+from ibis import util
+from ibis.expr.types.generic import Column, Scalar, Value, literal
 from ibis.expr.types.typing import V
 
 if TYPE_CHECKING:
@@ -44,17 +46,25 @@ def struct(
     Create a struct literal from a [`dict`][dict] with a specified type
     >>> t = ibis.struct(dict(a=1, b='foo'), type='struct<a: float, b: string>')
     """
-    return literal(collections.OrderedDict(value), type=type)
+    import ibis.expr.operations as ops
+
+    items = dict(value)
+    values = items.values()
+    if any(isinstance(value, Value) for value in values):
+        return ops.StructColumn(
+            names=tuple(items.keys()), values=tuple(values)
+        ).to_expr()
+    return literal(collections.OrderedDict(items), type=type)
 
 
 @public
-class StructValue(AnyValue):
+class StructValue(Value):
     def __dir__(self):
         return sorted(
             frozenset(itertools.chain(dir(type(self)), self.type().names))
         )
 
-    def __getitem__(self, name: str) -> ir.ValueExpr:
+    def __getitem__(self, name: str) -> ir.Value:
         """Extract the `name` field from this struct.
 
         Parameters
@@ -64,7 +74,7 @@ class StructValue(AnyValue):
 
         Returns
         -------
-        ValueExpr
+        Value
             An expression with the type of the field being accessed.
 
         Examples
@@ -77,6 +87,30 @@ class StructValue(AnyValue):
         import ibis.expr.operations as ops
 
         return ops.StructField(self, name).to_expr().name(name)
+
+    def __setstate__(self, instance_dictionary):
+        self.__dict__ = instance_dictionary
+
+    def __getattr__(self, name: str) -> ir.Value:
+        """Extract the `name` field from this struct."""
+        if name in self.names:
+            return self.__getitem__(name)
+        raise AttributeError(name)
+
+    @cached_property
+    def names(self) -> Sequence[str]:
+        """Return the field names of the struct."""
+        return self.type().names
+
+    @cached_property
+    def types(self) -> Sequence[dt.DataType]:
+        """Return the field types of the struct."""
+        return self.type().types
+
+    @cached_property
+    def fields(self) -> Mapping[str, dt.DataType]:
+        """Return a mapping from field name to field type of the struct."""
+        return util.frozendict(self.type().pairs)
 
     def destructure(self) -> DestructValue:
         """Destructure `self` into a `DestructValue`.
@@ -93,7 +127,7 @@ class StructValue(AnyValue):
 
 
 @public
-class StructScalar(AnyScalar, StructValue):
+class StructScalar(Scalar, StructValue):
     def destructure(self) -> DestructScalar:
         """Destructure `self` into a `DestructScalar`.
 
@@ -109,7 +143,7 @@ class StructScalar(AnyScalar, StructValue):
 
 
 @public
-class StructColumn(AnyColumn, StructValue):
+class StructColumn(Column, StructValue):
     def destructure(self) -> DestructColumn:
         """Destructure `self` into a `DestructColumn`.
 
@@ -125,7 +159,7 @@ class StructColumn(AnyColumn, StructValue):
 
 
 @public
-class DestructValue(AnyValue):
+class DestructValue(Value):
     """Class that represents a destruct value.
 
     When assigning a destruct column, the field inside this destruct column
@@ -138,10 +172,10 @@ class DestructValue(AnyValue):
 
 
 @public
-class DestructScalar(AnyScalar, DestructValue):
+class DestructScalar(Scalar, DestructValue):
     pass
 
 
 @public
-class DestructColumn(AnyColumn, DestructValue):
+class DestructColumn(Column, DestructValue):
     pass

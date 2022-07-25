@@ -1,15 +1,17 @@
+from __future__ import annotations
+
 from public import public
 
 from ibis.common.validators import immutable_property
 from ibis.expr import datatypes as dt
 from ibis.expr import rules as rlz
 from ibis.expr import types as ir
-from ibis.expr.operations.core import ValueOp, distinct_roots
+from ibis.expr.operations.core import Value, distinct_roots
 from ibis.expr.window import propagate_down_window
 
 
 @public
-class WindowOp(ValueOp):
+class Window(Value):
     expr = rlz.analytic
     window = rlz.window(from_base_table_of="expr")
 
@@ -22,7 +24,7 @@ class WindowOp(ValueOp):
 
     def over(self, window):
         new_window = self.window.combine(window)
-        return WindowOp(self.expr, new_window)
+        return Window(self.expr, new_window)
 
     @property
     def inputs(self):
@@ -35,12 +37,12 @@ class WindowOp(ValueOp):
 
 
 @public
-class AnalyticOp(ValueOp):
+class Analytic(Value):
     output_shape = rlz.Shape.COLUMNAR
 
 
 @public
-class ShiftBase(AnalyticOp):
+class ShiftBase(Analytic):
     arg = rlz.column(rlz.any)
 
     offset = rlz.optional(rlz.one_of((rlz.integer, rlz.interval)))
@@ -60,7 +62,7 @@ class Lead(ShiftBase):
 
 
 @public
-class RankBase(AnalyticOp):
+class RankBase(Analytic):
     output_dtype = dt.int64
 
 
@@ -136,7 +138,7 @@ class RowNumber(RankBase):
 
 
 @public
-class CumulativeOp(AnalyticOp):
+class CumulativeOp(Analytic):
     pass
 
 
@@ -197,20 +199,26 @@ class CumulativeAll(CumulativeOp):
 
 
 @public
-class PercentRank(AnalyticOp):
+class PercentRank(Analytic):
     arg = rlz.column(rlz.any)
     output_dtype = dt.double
 
 
 @public
-class NTile(AnalyticOp):
+class CumeDist(Analytic):
+    arg = rlz.column(rlz.any)
+    output_dtype = dt.double
+
+
+@public
+class NTile(Analytic):
     arg = rlz.column(rlz.any)
     buckets = rlz.scalar(rlz.integer)
     output_dtype = dt.int64
 
 
 @public
-class FirstValue(AnalyticOp):
+class FirstValue(Analytic):
     """Retrieve the first element."""
 
     arg = rlz.column(rlz.any)
@@ -218,7 +226,7 @@ class FirstValue(AnalyticOp):
 
 
 @public
-class LastValue(AnalyticOp):
+class LastValue(Analytic):
     """Retrieve the last element."""
 
     arg = rlz.column(rlz.any)
@@ -226,7 +234,7 @@ class LastValue(AnalyticOp):
 
 
 @public
-class NthValue(AnalyticOp):
+class NthValue(Analytic):
     """Retrieve the Nth element."""
 
     arg = rlz.column(rlz.any)
@@ -234,32 +242,4 @@ class NthValue(AnalyticOp):
     output_dtype = rlz.dtype_like("arg")
 
 
-@public
-class Any(ValueOp):
-
-    # Depending on the kind of input boolean array, the result might either be
-    # array-like (an existence-type predicate) or scalar (a reduction)
-    arg = rlz.column(rlz.boolean)
-
-    output_dtype = dt.boolean
-
-    @property
-    def _reduction(self):
-        roots = self.arg.op().root_tables()
-        return len(roots) < 2
-
-    @immutable_property
-    def output_shape(self):
-        if self._reduction:
-            return rlz.Shape.SCALAR
-        else:
-            return rlz.Shape.COLUMNAR
-
-    def negate(self):
-        return NotAny(self.arg)
-
-
-@public
-class NotAny(Any):
-    def negate(self):
-        return Any(self.arg)
+public(WindowOp=Window, AnalyticOp=Analytic)

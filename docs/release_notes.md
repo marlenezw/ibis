@@ -1,6 +1,20 @@
 Release Notes
 ---
 
+### [3.0.2](https://github.com/ibis-project/ibis/compare/3.0.1...3.0.2) (2022-04-28)
+
+
+### Bug Fixes
+
+* **docs:** fix tempdir location for docs build ([dcd1b22](https://github.com/ibis-project/ibis/commit/dcd1b226903db9d589a40ccd987280de0c8362e3))
+
+### [3.0.1](https://github.com/ibis-project/ibis/compare/3.0.0...3.0.1) (2022-04-28)
+
+
+### Bug Fixes
+
+* **build:** replace version before exec plugin runs ([573139c](https://github.com/ibis-project/ibis/commit/573139c3569aa6c6a197910f3582c6e24593688e))
+
 ## [3.0.0](https://github.com/ibis-project/ibis/compare/2.1.1...3.0.0) (2022-04-25)
 
 
@@ -17,7 +31,7 @@ Release Notes
     are the only way to retrieve the expression's name and datatype.
   - `ibis.expr.operations.Node.output_type` is a property now not a method,
     decorate those methods with `@property`
-  - `ibis.expr.operations.ValueOp` subclasses must define `output_shape` and
+  - `ibis.expr.operations.Value` subclasses must define `output_shape` and
     `output_dtype` properties from now on (note the datatype abbreviation `dtype`
     in the property name)
   - `ibis.expr.rules.cast()`, `scalar_like()` and `array_like()` rules have been

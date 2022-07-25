@@ -1,3 +1,5 @@
+import operator
+
 import pandas as pd
 import sqlalchemy as sa
 
@@ -8,45 +10,17 @@ import ibis.expr.operations as ops
 import ibis.expr.types as ir
 from ibis.backends.base.sql.alchemy import (
     fixed_arity,
-    infix_op,
-    reduction,
     sqlalchemy_operation_registry,
     sqlalchemy_window_functions_registry,
+    to_sqla_type,
     unary,
-    variance_reduction,
 )
+from ibis.backends.base.sql.alchemy.registry import _gen_string_find
 
 operation_registry = sqlalchemy_operation_registry.copy()
 
 # NOTE: window functions are available from MySQL 8 and MariaDB 10.2
 operation_registry.update(sqlalchemy_window_functions_registry)
-
-
-def _substr(t, expr):
-    f = sa.func.substr
-
-    arg, start, length = expr.op().args
-
-    sa_arg = t.translate(arg)
-    sa_start = t.translate(start)
-
-    if length is None:
-        return f(sa_arg, sa_start + 1)
-    else:
-        sa_length = t.translate(length)
-        return f(sa_arg, sa_start + 1, sa_length)
-
-
-def _string_find(t, expr):
-    arg, substr, start, _ = expr.op().args
-
-    if start is not None:
-        raise NotImplementedError
-
-    sa_arg = t.translate(arg)
-    sa_substr = t.translate(substr)
-
-    return sa.func.locate(sa_arg, sa_substr) - 1
 
 
 def _capitalize(t, expr):
@@ -91,41 +65,11 @@ def _truncate(t, expr):
     return sa.func.date_format(sa_arg, fmt)
 
 
-def _cast(t, expr):
-    arg, typ = expr.op().args
-
-    sa_arg = t.translate(arg)
-    sa_type = t.get_sqla_type(typ)
-
-    # specialize going from an integer type to a timestamp
-    if isinstance(arg.type(), dt.Integer) and isinstance(sa_type, sa.DateTime):
-        return sa.func.timezone('UTC', sa.func.to_timestamp(sa_arg))
-
-    if arg.type().equals(dt.binary) and typ.equals(dt.string):
-        return sa.func.encode(sa_arg, 'escape')
-
-    if typ.equals(dt.binary):
-        #  decode yields a column of memoryview which is annoying to deal with
-        # in pandas. CAST(expr AS BYTEA) is correct and returns byte strings.
-        return sa.cast(sa_arg, sa.LargeBinary())
-
-    return sa.cast(sa_arg, sa_type)
-
-
 def _log(t, expr):
     arg, base = expr.op().args
     sa_arg = t.translate(arg)
     sa_base = t.translate(base)
     return sa.func.log(sa_base, sa_arg)
-
-
-def _identical_to(t, expr):
-    left, right = args = expr.op().args
-    if left.equals(right):
-        return True
-    else:
-        left, right = map(t.translate, args)
-        return left.op('<=>')(right)
 
 
 def _round(t, expr):
@@ -138,16 +82,6 @@ def _round(t, expr):
         sa_digits = t.translate(digits)
 
     return sa.func.round(sa_arg, sa_digits)
-
-
-def _floor_divide(t, expr):
-    left, right = map(t.translate, expr.op().args)
-    return sa.func.floor(left / right)
-
-
-def _string_join(t, expr):
-    sep, elements = expr.op().args
-    return sa.func.concat_ws(t.translate(sep), *map(t.translate, elements))
 
 
 def _interval_from_integer(t, expr):
@@ -178,7 +112,19 @@ def _timestamp_diff(t, expr):
     return sa.func.timestampdiff(sa.text('SECOND'), sa_right, sa_left)
 
 
-def _literal(t, expr):
+def _string_to_timestamp(t, expr):
+    op = expr.op()
+    sa_arg = t.translate(op.arg)
+    sa_format_str = t.translate(op.format_str)
+    if (op.timezone is not None) and op.timezone.op().value != "UTC":
+        raise com.UnsupportedArgumentError(
+            'MySQL backend only supports timezone UTC for converting'
+            'string to timestamp.'
+        )
+    return sa.func.str_to_date(sa_arg, sa_format_str)
+
+
+def _literal(_, expr):
     if isinstance(expr, ir.IntervalScalar):
         if expr.type().unit in {'ms', 'ns'}:
             raise com.UnsupportedOperationError(
@@ -194,11 +140,11 @@ def _literal(t, expr):
         value = expr.op().value
         if isinstance(value, pd.Timestamp):
             value = value.to_pydatetime()
-        return sa.literal(value)
 
-
-def _random(t, expr):
-    return sa.func.random()
+        lit = sa.literal(value)
+        if isinstance(dtype := expr.type(), dt.Timestamp):
+            return sa.cast(lit, to_sqla_type(dtype))
+        return lit
 
 
 def _group_concat(t, expr):
@@ -216,7 +162,7 @@ def _day_of_week_index(t, expr):
     (arg,) = expr.op().args
     left = sa.func.dayofweek(t.translate(arg)) - 2
     right = 7
-    return ((left % right) + right) % right
+    return (left % right + right) % right
 
 
 def _day_of_week_name(t, expr):
@@ -224,28 +170,39 @@ def _day_of_week_name(t, expr):
     return sa.func.dayname(t.translate(arg))
 
 
+def _find_in_set(t, expr):
+    op = expr.op()
+    return (
+        sa.func.find_in_set(
+            t.translate(op.needle),
+            sa.func.concat_ws(",", *map(t.translate, op.values)),
+        )
+        - 1
+    )
+
+
 operation_registry.update(
     {
         ops.Literal: _literal,
         ops.IfNull: fixed_arity(sa.func.ifnull, 2),
         # strings
-        ops.Substring: _substr,
-        ops.StringFind: _string_find,
+        ops.StringFind: _gen_string_find(sa.func.locate),
+        ops.FindInSet: _find_in_set,
         ops.Capitalize: _capitalize,
-        ops.RegexSearch: infix_op('REGEXP'),
+        ops.RegexSearch: fixed_arity(lambda x, y: x.op('REGEXP')(y), 2),
         # math
         ops.Log: _log,
         ops.Log2: unary(sa.func.log2),
         ops.Log10: unary(sa.func.log10),
         ops.Round: _round,
-        ops.RandomScalar: _random,
         # dates and times
-        ops.DateAdd: infix_op('+'),
-        ops.DateSub: infix_op('-'),
+        ops.DateAdd: fixed_arity(operator.add, 2),
+        ops.DateSub: fixed_arity(operator.sub, 2),
         ops.DateDiff: fixed_arity(sa.func.datediff, 2),
-        ops.TimestampAdd: infix_op('+'),
-        ops.TimestampSub: infix_op('-'),
+        ops.TimestampAdd: fixed_arity(operator.add, 2),
+        ops.TimestampSub: fixed_arity(operator.sub, 2),
         ops.TimestampDiff: _timestamp_diff,
+        ops.StringToTimestamp: _string_to_timestamp,
         ops.DateTruncate: _truncate,
         ops.TimestampTruncate: _truncate,
         ops.IntervalFromInteger: _interval_from_integer,
@@ -253,21 +210,15 @@ operation_registry.update(
         ops.ExtractYear: _extract('year'),
         ops.ExtractMonth: _extract('month'),
         ops.ExtractDay: _extract('day'),
-        ops.ExtractDayOfYear: unary('dayofyear'),
+        ops.ExtractDayOfYear: unary(sa.func.dayofyear),
         ops.ExtractQuarter: _extract('quarter'),
-        ops.ExtractEpochSeconds: unary('UNIX_TIMESTAMP'),
-        ops.ExtractWeekOfYear: fixed_arity('weekofyear', 1),
+        ops.ExtractEpochSeconds: unary(sa.func.UNIX_TIMESTAMP),
+        ops.ExtractWeekOfYear: unary(sa.func.weekofyear),
         ops.ExtractHour: _extract('hour'),
         ops.ExtractMinute: _extract('minute'),
         ops.ExtractSecond: _extract('second'),
         ops.ExtractMillisecond: _extract('millisecond'),
         # reductions
-        ops.BitAnd: reduction(sa.func.bit_and),
-        ops.BitOr: reduction(sa.func.bit_or),
-        ops.BitXor: reduction(sa.func.bit_xor),
-        ops.Variance: variance_reduction('var'),
-        ops.StandardDev: variance_reduction('stddev'),
-        ops.IdenticalTo: _identical_to,
         ops.TimestampNow: fixed_arity(sa.func.now, 0),
         # others
         ops.GroupConcat: _group_concat,

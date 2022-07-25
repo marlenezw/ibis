@@ -187,7 +187,7 @@ def execute_sort_key_series_bool(op, data, ascending, **kwargs):
 
 
 def call_numpy_ufunc(func, op, data, **kwargs):
-    if data.dtype == np.dtype(np.object_):
+    if getattr(data, "dtype", None) == np.dtype(np.object_):
         return data.apply(functools.partial(execute_node, op, **kwargs))
     return func(data)
 
@@ -209,10 +209,56 @@ def execute_series_group_by_negate(op, data, **kwargs):
     )
 
 
-@execute_node.register(ops.UnaryOp, pd.Series)
+@execute_node.register(ops.Unary, pd.Series)
 def execute_series_unary_op(op, data, **kwargs):
     function = getattr(np, type(op).__name__.lower())
     return call_numpy_ufunc(function, op, data, **kwargs)
+
+
+@execute_node.register(ops.Acos, (pd.Series, *numeric_types))
+def execute_series_acos(_, data, **kwargs):
+    return np.arccos(data)
+
+
+@execute_node.register(ops.Asin, (pd.Series, *numeric_types))
+def execute_series_asin(_, data, **kwargs):
+    return np.arcsin(data)
+
+
+@execute_node.register(ops.Atan, (pd.Series, *numeric_types))
+def execute_series_atan(_, data, **kwargs):
+    return np.arctan(data)
+
+
+@execute_node.register(ops.Cot, (pd.Series, *numeric_types))
+def execute_series_cot(_, data, **kwargs):
+    return np.cos(data) / np.sin(data)
+
+
+@execute_node.register(
+    ops.Atan2, (pd.Series, *numeric_types), (pd.Series, *numeric_types)
+)
+def execute_series_atan2(_, y, x, **kwargs):
+    return np.arctan2(y, x)
+
+
+@execute_node.register(
+    (ops.Cos, ops.Sin, ops.Tan),
+    (pd.Series, *numeric_types),
+)
+def execute_series_trig(op, data, **kwargs):
+    function = getattr(np, type(op).__name__.lower())
+    return call_numpy_ufunc(function, op, data, **kwargs)
+
+
+@execute_node.register(ops.Radians, (pd.Series, *numeric_types))
+def execute_series_radians(_, data, **kwargs):
+    return np.radians(data)
+
+
+@execute_node.register(ops.Degrees, (pd.Series, *numeric_types))
+def execute_series_degrees(_, data, **kwargs):
+    return np.degrees(data)
 
 
 @execute_node.register((ops.Ceil, ops.Floor), pd.Series)
@@ -515,7 +561,9 @@ def execute_reduction_series_groupby_std(
 
 
 @execute_node.register(
-    (ops.CountDistinct, ops.HLLCardinality), SeriesGroupBy, type(None)
+    (ops.CountDistinct, ops.ApproxCountDistinct),
+    SeriesGroupBy,
+    type(None),
 )
 def execute_count_distinct_series_groupby(
     op, data, _, aggcontext=None, **kwargs
@@ -551,7 +599,9 @@ def execute_reduction_series_gb_mask(
 
 
 @execute_node.register(
-    (ops.CountDistinct, ops.HLLCardinality), SeriesGroupBy, SeriesGroupBy
+    (ops.CountDistinct, ops.ApproxCountDistinct),
+    SeriesGroupBy,
+    SeriesGroupBy,
 )
 def execute_count_distinct_series_groupby_mask(
     op, data, mask, aggcontext=None, **kwargs
@@ -597,7 +647,9 @@ def execute_reduction_series_mask(op, data, mask, aggcontext=None, **kwargs):
 
 
 @execute_node.register(
-    (ops.CountDistinct, ops.HLLCardinality), pd.Series, (pd.Series, type(None))
+    (ops.CountDistinct, ops.ApproxCountDistinct),
+    pd.Series,
+    (pd.Series, type(None)),
 )
 def execute_count_distinct_series_mask(
     op, data, mask, aggcontext=None, **kwargs
@@ -681,24 +733,48 @@ def execute_count_frame(op, data, _, **kwargs):
     return len(data)
 
 
-@execute_node.register(ops.Not, (bool, np.bool_))
-def execute_not_bool(op, data, **kwargs):
+@execute_node.register(ops.BitAnd, pd.Series, (pd.Series, type(None)))
+def execute_bit_and_series(_, data, mask, aggcontext=None, **kwargs):
+    return aggcontext.agg(
+        data[mask] if mask is not None else data,
+        np.bitwise_and.reduce,
+    )
+
+
+@execute_node.register(ops.BitOr, pd.Series, (pd.Series, type(None)))
+def execute_bit_or_series(_, data, mask, aggcontext=None, **kwargs):
+    return aggcontext.agg(
+        data[mask] if mask is not None else data,
+        np.bitwise_or.reduce,
+    )
+
+
+@execute_node.register(ops.BitXor, pd.Series, (pd.Series, type(None)))
+def execute_bit_xor_series(_, data, mask, aggcontext=None, **kwargs):
+    return aggcontext.agg(
+        data[mask] if mask is not None else data,
+        np.bitwise_xor.reduce,
+    )
+
+
+@execute_node.register((ops.Not, ops.Negate), (bool, np.bool_))
+def execute_not_bool(_, data, **kwargs):
     return not data
 
 
-@execute_node.register(ops.BinaryOp, pd.Series, pd.Series)
+@execute_node.register(ops.Binary, pd.Series, pd.Series)
 @execute_node.register(
-    (ops.NumericBinaryOp, ops.LogicalBinaryOp, ops.Comparison),
+    (ops.NumericBinary, ops.LogicalBinary, ops.Comparison),
     numeric_types,
     pd.Series,
 )
 @execute_node.register(
-    (ops.NumericBinaryOp, ops.LogicalBinaryOp, ops.Comparison),
+    (ops.NumericBinary, ops.LogicalBinary, ops.Comparison),
     pd.Series,
     numeric_types,
 )
 @execute_node.register(
-    (ops.NumericBinaryOp, ops.LogicalBinaryOp, ops.Comparison),
+    (ops.NumericBinary, ops.LogicalBinary, ops.Comparison),
     numeric_types,
     numeric_types,
 )
@@ -721,7 +797,7 @@ def execute_binary_op(op, left, right, **kwargs):
         return operation(left, right)
 
 
-@execute_node.register(ops.BinaryOp, SeriesGroupBy, SeriesGroupBy)
+@execute_node.register(ops.Binary, SeriesGroupBy, SeriesGroupBy)
 def execute_binary_op_series_group_by(op, left, right, **kwargs):
     left_groupings = left.grouper.groupings
     right_groupings = right.grouper.groupings
@@ -734,19 +810,19 @@ def execute_binary_op_series_group_by(op, left, right, **kwargs):
     return result.groupby(left_groupings)
 
 
-@execute_node.register(ops.BinaryOp, SeriesGroupBy, simple_types)
+@execute_node.register(ops.Binary, SeriesGroupBy, simple_types)
 def execute_binary_op_series_gb_simple(op, left, right, **kwargs):
     result = execute_binary_op(op, left.obj, right, **kwargs)
     return result.groupby(left.grouper.groupings)
 
 
-@execute_node.register(ops.BinaryOp, simple_types, SeriesGroupBy)
+@execute_node.register(ops.Binary, simple_types, SeriesGroupBy)
 def execute_binary_op_simple_series_gb(op, left, right, **kwargs):
     result = execute_binary_op(op, left, right.obj, **kwargs)
     return result.groupby(right.grouper.groupings)
 
 
-@execute_node.register(ops.UnaryOp, SeriesGroupBy)
+@execute_node.register(ops.Unary, SeriesGroupBy)
 def execute_unary_op_series_gb(op, operand, **kwargs):
     result = execute_node(op, operand.obj, **kwargs)
     return result.groupby(operand.grouper.groupings)
@@ -870,14 +946,18 @@ def execute_node_string_join(op, args, **kwargs):
 
 
 @execute_node.register(
-    ops.Contains, pd.Series, (collections.abc.Sequence, collections.abc.Set)
+    ops.Contains,
+    pd.Series,
+    (collections.abc.Sequence, collections.abc.Set, pd.Series),
 )
 def execute_node_contains_series_sequence(op, data, elements, **kwargs):
     return data.isin(elements)
 
 
 @execute_node.register(
-    ops.NotContains, pd.Series, (collections.abc.Sequence, collections.abc.Set)
+    ops.NotContains,
+    pd.Series,
+    (collections.abc.Sequence, collections.abc.Set, pd.Series),
 )
 def execute_node_not_contains_series_sequence(op, data, elements, **kwargs):
     return ~(data.isin(elements))
@@ -1082,7 +1162,7 @@ def wrap_case_result(raw, expr):
     ----------
     raw : ndarray[T]
         The raw results of executing the ``CASE`` expression
-    expr : ValueExpr
+    expr : Value
         The expression from the which `raw` was computed
 
     Returns
@@ -1096,7 +1176,7 @@ def wrap_case_result(raw, expr):
         result = pd.Series(
             raw_1d, dtype=constants.IBIS_TYPE_TO_PANDAS_TYPE[expr.type()]
         )
-    if result.size == 1 and isinstance(expr, ir.ScalarExpr):
+    if result.size == 1 and isinstance(expr, ir.Scalar):
         return result.iloc[0].item()
     return result
 
@@ -1135,3 +1215,24 @@ def execute_rowid(op, *args, **kwargs):
     raise com.UnsupportedOperationError(
         'rowid is not supported in pandas backends'
     )
+
+
+@execute_node.register(ops.TableArrayView, pd.DataFrame)
+def execute_table_array_view(op, _, **kwargs):
+    return execute(op.table).squeeze()
+
+
+@execute_node.register(ops.ZeroIfNull, pd.Series)
+def execute_zero_if_null_series(op, data, **kwargs):
+    zero = op.arg.type().to_pandas().type(0)
+    return data.replace({np.nan: zero, None: zero, pd.NA: zero})
+
+
+@execute_node.register(
+    ops.ZeroIfNull,
+    (type(None), type(pd.NA), numbers.Real, np.integer, np.floating),
+)
+def execute_zero_if_null_scalar(op, data, **kwargs):
+    if data is None or pd.isna(data) or math.isnan(data) or np.isnan(data):
+        return op.arg.type().to_pandas().type(0)
+    return data

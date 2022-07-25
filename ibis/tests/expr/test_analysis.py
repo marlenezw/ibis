@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 import ibis
@@ -241,7 +243,7 @@ def test_mutation_fusion_overwrite():
     )
 
     # Since the second selection overwrites existing columns, it will
-    # not have the TableExpr as the first selection
+    # not have the Table as the first selection
     assert len(second_selection.op().selections) == 5
     assert (
         second_selection.op().selections[0].equals((t['col'] - 1).name('col'))
@@ -284,3 +286,45 @@ def test_select_filter_mutate_fusion():
     # to remove materialize for some performance in the short term
     assert len(first_selection.op().selections) == 0
     assert len(first_selection.op().predicates) == 1
+
+
+def test_no_filter_means_no_selection():
+    t = ibis.table(dict(a="string"))
+    proj = t.filter([])
+    assert proj.equals(t)
+
+
+def test_mutate_overwrites_existing_column():
+    t = ibis.table(dict(a="string"))
+    mut = t.mutate(a=42).select(["a"])
+    sel = mut.op().selections[0].op().table.op().selections[0].op().arg
+    assert isinstance(sel.op(), ops.Literal)
+    assert sel.op().value == 42
+
+
+def test_agg_selection_does_not_share_roots():
+    t = ibis.table(dict(a="string"), name="t")
+    s = ibis.table(dict(b="float64"), name="s")
+    gb = t.group_by("a")
+    n = s.count()
+
+    with pytest.raises(com.RelationError, match="Selection expressions"):
+        gb.aggregate(n=n)
+
+
+@pytest.mark.parametrize("num_joins", [1, 10])
+def test_large_compile(num_joins):
+    num_columns = 20
+    table = ibis.table(
+        {f"col_{i:d}": "string" for i in range(num_columns)}, name="t"
+    )
+    for _ in range(num_joins):
+        start = time.time()
+        table = table.mutate(dummy=ibis.literal(""))
+        stop = time.time()
+        assert stop - start < 1.0
+
+        start = time.time()
+        table = table.left_join(table, ["dummy"])[[table]]
+        stop = time.time()
+        assert stop - start < 1.0

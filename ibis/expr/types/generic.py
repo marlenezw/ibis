@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Sequence
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
@@ -10,12 +10,13 @@ from public import public
 
 import ibis
 import ibis.common.exceptions as com
+import ibis.util as util
 from ibis.expr import datatypes as dt
 from ibis.expr.types.core import Expr, _binop
 
 
 @public
-class ValueExpr(Expr):
+class Value(Expr):
 
     """
     Base class for a data generating expression having a fixed and known type,
@@ -32,7 +33,7 @@ class ValueExpr(Expr):
 
         Returns
         -------
-        ValueExpr
+        Value
             `self` with name `name`
 
         Examples
@@ -64,66 +65,6 @@ class ValueExpr(Expr):
     def type(self):
         return self.op().output_dtype
 
-
-@public
-class ScalarExpr(ValueExpr):
-    def to_projection(self):
-        """
-        Promote this column expression to a table projection
-        """
-        from ibis.expr.types.relations import TableExpr
-
-        roots = self.op().root_tables()
-        if len(roots) > 1:
-            raise com.RelationError(
-                'Cannot convert scalar expression '
-                'involving multiple base table references '
-                'to a projection'
-            )
-
-        table = TableExpr(roots[0])
-        return table.projection([self])
-
-    def _repr_html_(self) -> str | None:
-        return None
-
-
-@public
-class ColumnExpr(ValueExpr):
-    def parent(self):
-        return self._arg
-
-    def to_projection(self):
-        """
-        Promote this column expression to a table projection
-        """
-        from ibis.expr.types.relations import TableExpr
-
-        roots = self.op().root_tables()
-        if len(roots) > 1:
-            raise com.RelationError(
-                'Cannot convert array expression '
-                'involving multiple base table references '
-                'to a projection'
-            )
-
-        table = TableExpr(roots[0])
-        return table.projection([self])
-
-    def _repr_html_(self) -> str | None:
-        if not ibis.options.interactive:
-            return None
-
-        return self.execute().to_frame()._repr_html_()
-
-
-# TODO(kszucs): keep either ValueExpr or AnyValue
-# TODO(kszucs): keep either ColumnExpr or AnyColumn
-# TODO(kszucs): keep either ScalarExpr or ScalarColumn
-
-
-@public
-class AnyValue(ValueExpr):
     def hash(self, how: str = "fnv") -> ir.IntegerValue:
         """Compute an integer hash value.
 
@@ -141,7 +82,7 @@ class AnyValue(ValueExpr):
 
         return ops.Hash(self, how).to_expr()
 
-    def cast(self, target_type: dt.DataType) -> ValueExpr:
+    def cast(self, target_type: dt.DataType) -> Value:
         """Cast expression to indicated data type.
 
         Parameters
@@ -151,7 +92,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Casted expression
         """
         import ibis.expr.operations as ops
@@ -173,7 +114,7 @@ class AnyValue(ValueExpr):
             return result
         return result.name(f'cast({self.get_name()}, {op.to})')
 
-    def coalesce(self, *args: ValueExpr) -> ValueExpr:
+    def coalesce(self, *args: Value) -> Value:
         """Return the first non-null value from `args`.
 
         Parameters
@@ -183,7 +124,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Coalesced expression
 
         Examples
@@ -197,7 +138,7 @@ class AnyValue(ValueExpr):
 
         return ops.Coalesce([self, *args]).to_expr()
 
-    def greatest(self, *args: ir.ValueExpr) -> ir.ValueExpr:
+    def greatest(self, *args: ir.Value) -> ir.Value:
         """Compute the largest value among the supplied arguments.
 
         Parameters
@@ -207,14 +148,14 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Maximum of the passed arguments
         """
         import ibis.expr.operations as ops
 
         return ops.Greatest([self, *args]).to_expr()
 
-    def least(self, *args: ir.ValueExpr) -> ir.ValueExpr:
+    def least(self, *args: ir.Value) -> ir.Value:
         """Compute the smallest value among the supplied arguments.
 
         Parameters
@@ -224,7 +165,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Minimum of the passed arguments
         """
         import ibis.expr.operations as ops
@@ -245,7 +186,7 @@ class AnyValue(ValueExpr):
 
         return ops.TypeOf(self).to_expr()
 
-    def fillna(self, fill_value: ScalarExpr) -> ValueExpr:
+    def fillna(self, fill_value: Scalar) -> Value:
         """Replace any null values with the indicated fill value.
 
         Parameters
@@ -262,14 +203,14 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             `self` filled with `fill_value` where it is `NA`
         """
         import ibis.expr.operations as ops
 
         return ops.IfNull(self, fill_value).to_expr()
 
-    def nullif(self, null_if_expr: ValueExpr) -> ValueExpr:
+    def nullif(self, null_if_expr: Value) -> Value:
         """Set values to null if they equal the values `null_if_expr`.
 
         Commonly use to avoid divide-by-zero problems by replacing zero with
@@ -282,7 +223,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Value expression
         """
         import ibis.expr.operations as ops
@@ -291,8 +232,8 @@ class AnyValue(ValueExpr):
 
     def between(
         self,
-        lower: ValueExpr,
-        upper: ValueExpr,
+        lower: Value,
+        upper: Value,
     ) -> ir.BooleanValue:
         """Check if this expression is between `lower` and `upper`, inclusive.
 
@@ -315,7 +256,7 @@ class AnyValue(ValueExpr):
 
     def isin(
         self,
-        values: ValueExpr | Sequence[ValueExpr],
+        values: Value | Sequence[Value],
     ) -> ir.BooleanValue:
         """Check whether this expression's values are in `values`.
 
@@ -343,7 +284,7 @@ class AnyValue(ValueExpr):
 
     def notin(
         self,
-        values: ValueExpr | Sequence[ValueExpr],
+        values: Value | Sequence[Value],
     ) -> ir.BooleanValue:
         """Check whether this expression's values are not in `values`.
 
@@ -363,9 +304,9 @@ class AnyValue(ValueExpr):
 
     def substitute(
         self,
-        value: ValueExpr,
-        replacement: ValueExpr | None = None,
-        else_: ValueExpr | None = None,
+        value: Value,
+        replacement: Value | None = None,
+        else_: Value | None = None,
     ):
         """Replace one or more values in a value expression.
 
@@ -381,7 +322,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Replaced values
         """
         expr = self.case()
@@ -393,7 +334,7 @@ class AnyValue(ValueExpr):
 
         return expr.else_(else_ if else_ is not None else self).end()
 
-    def over(self, window: win.Window) -> ValueExpr:
+    def over(self, window: win.Window) -> Value:
         """Construct a window expression.
 
         Parameters
@@ -403,7 +344,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             A window function expression
         """
         import ibis.expr.operations as ops
@@ -414,10 +355,10 @@ class AnyValue(ValueExpr):
         if isinstance(prior_op, ops.Alias):
             return prior_op.arg.over(window).name(prior_op.name)
 
-        if isinstance(prior_op, ops.WindowOp):
+        if isinstance(prior_op, ops.Window):
             op = prior_op.over(window)
         else:
-            op = ops.WindowOp(self, window)
+            op = ops.Window(self, window)
 
         result = op.to_expr()
 
@@ -469,9 +410,9 @@ class AnyValue(ValueExpr):
 
     def cases(
         self,
-        case_result_pairs: Iterable[tuple[ir.BooleanValue, ValueExpr]],
-        default: ValueExpr | None = None,
-    ) -> ValueExpr:
+        case_result_pairs: Iterable[tuple[ir.BooleanValue, Value]],
+        default: Value | None = None,
+    ) -> Value:
         """Create a case expression in one shot.
 
         Parameters
@@ -483,7 +424,7 @@ class AnyValue(ValueExpr):
 
         Returns
         -------
-        ValueExpr
+        Value
             Value expression
         """
         builder = self.case()
@@ -497,7 +438,7 @@ class AnyValue(ValueExpr):
 
         return ops.ArrayCollect(self).to_expr()
 
-    def identical_to(self, other: ValueExpr) -> ir.BooleanValue:
+    def identical_to(self, other: Value) -> ir.BooleanValue:
         """Return whether this expression is identical to other.
 
         Corresponds to `IS NOT DISTINCT FROM` in SQL.
@@ -546,37 +487,37 @@ class AnyValue(ValueExpr):
     def __hash__(self) -> int:
         return super().__hash__()
 
-    def __eq__(self, other: AnyValue) -> ir.BooleanValue:
+    def __eq__(self, other: Value) -> ir.BooleanValue:
         import ibis.expr.operations as ops
         import ibis.expr.rules as rlz
 
         return _binop(ops.Equals, self, rlz.any(other))
 
-    def __ne__(self, other: AnyValue) -> ir.BooleanValue:
+    def __ne__(self, other: Value) -> ir.BooleanValue:
         import ibis.expr.operations as ops
         import ibis.expr.rules as rlz
 
         return _binop(ops.NotEquals, self, rlz.any(other))
 
-    def __ge__(self, other: AnyValue) -> ir.BooleanValue:
+    def __ge__(self, other: Value) -> ir.BooleanValue:
         import ibis.expr.operations as ops
         import ibis.expr.rules as rlz
 
         return _binop(ops.GreaterEqual, self, rlz.any(other))
 
-    def __gt__(self, other: AnyValue) -> ir.BooleanValue:
+    def __gt__(self, other: Value) -> ir.BooleanValue:
         import ibis.expr.operations as ops
         import ibis.expr.rules as rlz
 
         return _binop(ops.Greater, self, rlz.any(other))
 
-    def __le__(self, other: AnyValue) -> ir.BooleanValue:
+    def __le__(self, other: Value) -> ir.BooleanValue:
         import ibis.expr.operations as ops
         import ibis.expr.rules as rlz
 
         return _binop(ops.LessEqual, self, rlz.any(other))
 
-    def __lt__(self, other: AnyValue) -> ir.BooleanValue:
+    def __lt__(self, other: Value) -> ir.BooleanValue:
         import ibis.expr.operations as ops
         import ibis.expr.rules as rlz
 
@@ -584,37 +525,117 @@ class AnyValue(ValueExpr):
 
 
 @public
-class AnyScalar(ScalarExpr, AnyValue):
-    pass  # noqa: E701,E302
+class Scalar(Value):
+    def to_projection(self) -> ir.Table:
+        """Promote this scalar expression to a projection."""
+        from ibis.expr.types.relations import Table
+
+        roots = self.op().root_tables()
+        if len(roots) > 1:
+            raise com.RelationError(
+                'Cannot convert scalar expression '
+                'involving multiple base table references '
+                'to a projection'
+            )
+
+        table = Table(roots[0])
+        return table.projection([self])
+
+    def _repr_html_(self) -> str | None:
+        return None
 
 
 @public
-class AnyColumn(ColumnExpr, AnyValue):
-    def bottomk(self, k: int, by: ValueExpr | None = None) -> ir.TopKExpr:
+class Column(Value):
+    @util.deprecated(version="4.0.0", instead="")
+    def parent(self):  # pragma: no cover
+        return self._arg
+
+    def to_projection(self) -> ir.Table:
+        """Promote this column expression to a projection."""
+        from ibis.expr.types.relations import Table
+
+        roots = self.op().root_tables()
+        if len(roots) > 1:
+            raise com.RelationError(
+                'Cannot convert array expression involving multiple base '
+                'table references to a projection'
+            )
+
+        table = Table(roots[0])
+        return table.projection([self])
+
+    def _repr_html_(self) -> str | None:
+        if not ibis.options.interactive:
+            return None
+
+        return self.execute().to_frame()._repr_html_()
+
+    def bottomk(self, k: int, by: Value | None = None) -> ir.TopK:
         raise NotImplementedError("bottomk is not implemented")
 
     def approx_nunique(
         self,
         where: ir.BooleanValue | None = None,
     ) -> ir.IntegerScalar:
+        """Return the approximate number of distinct elements in `self`.
+
+        !!! info "The result may or may not be exact"
+
+            Whether the result is an approximation depends on the backend.
+
+            !!! warning "Do not depend on the results being exact"
+
+        Parameters
+        ----------
+        where
+            Filter in values when `where` is `True`
+
+        Returns
+        -------
+        Scalar
+            An approximate count of the distinct elements of `self`
+        """
         import ibis.expr.operations as ops
 
-        return ops.HLLCardinality(self, where).to_expr().name("approx_nunique")
+        return (
+            ops.ApproxCountDistinct(self, where)
+            .to_expr()
+            .name("approx_nunique")
+        )
 
     def approx_median(
         self,
         where: ir.BooleanValue | None = None,
-    ) -> ScalarExpr:
+    ) -> Scalar:
+        """Return an approximate of the median of `self`.
+
+        !!! info "The result may or may not be exact"
+
+            Whether the result is an approximation depends on the backend.
+
+            !!! warning "Do not depend on the results being exact"
+
+        Parameters
+        ----------
+        where
+            Filter in values when `where` is `True`
+
+        Returns
+        -------
+        Scalar
+            An approximation of the median of `self`
+        """
         import ibis.expr.operations as ops
 
-        return ops.CMSMedian(self, where).to_expr().name("approx_median")
+        return ops.ApproxMedian(self, where).to_expr().name("approx_median")
 
-    def max(self, where: ir.BooleanValue | None = None) -> ScalarExpr:
+    def max(self, where: ir.BooleanValue | None = None) -> Scalar:
         import ibis.expr.operations as ops
 
         return ops.Max(self, where).to_expr().name("max")
 
-    def min(self, where: ir.BooleanValue | None = None) -> ScalarExpr:
+    def min(self, where: ir.BooleanValue | None = None) -> Scalar:
         import ibis.expr.operations as ops
 
         return ops.Min(self, where).to_expr().name("min")
@@ -629,8 +650,8 @@ class AnyColumn(ColumnExpr, AnyValue):
     def topk(
         self,
         k: int,
-        by: ir.ValueExpr | None = None,
-    ) -> ir.TopKExpr:
+        by: ir.Value | None = None,
+    ) -> ir.TopK:
         """Return a "top k" expression.
 
         Parameters
@@ -642,7 +663,7 @@ class AnyColumn(ColumnExpr, AnyValue):
 
         Returns
         -------
-        TopKExpr
+        TopK
             A top-k expression
         """
         import ibis.expr.operations as ops
@@ -690,8 +711,8 @@ class AnyColumn(ColumnExpr, AnyValue):
     def arbitrary(
         self,
         where: ir.BooleanValue | None = None,
-        how: str | None = None,
-    ) -> ScalarExpr:
+        how: Literal["first", "last", "heavy"] | None = None,
+    ) -> Scalar:
         """Select an arbitrary value in a column.
 
         Parameters
@@ -699,12 +720,17 @@ class AnyColumn(ColumnExpr, AnyValue):
         where
             A filter expression
         how
-            Heavy selects a frequently occurring value using the heavy hitters
-            algorithm. Heavy is only supported by Clickhouse backend.
+            The method to use for selecting the element.
+
+            * `"first"`: Select the first non-`NULL` element
+            * `"last"`: Select the last non-`NULL` element
+            * `"heavy"`: Select a frequently occurring value using the heavy
+              hitters algorithm. `"heavy"` is only supported by Clickhouse
+              backend.
 
         Returns
         -------
-        ScalarExpr
+        Scalar
             An expression
         """
         import ibis.expr.operations as ops
@@ -728,17 +754,17 @@ class AnyColumn(ColumnExpr, AnyValue):
 
         return ops.Count(self, where).to_expr().name("count")
 
-    def value_counts(self, metric_name: str = "count") -> ir.TableExpr:
+    def value_counts(self, metric_name: str = "count") -> ir.Table:
         """Compute a frequency table.
 
         Returns
         -------
-        TableExpr
+        Table
             Frequency table expression
         """
-        from ibis.expr.types.relations import find_base_table
+        from ibis.expr.analysis import find_first_base_table
 
-        base = find_base_table(self)
+        base = find_first_base_table(self)
         metric = base.count().name(metric_name)
 
         if not self.has_name():
@@ -748,37 +774,42 @@ class AnyColumn(ColumnExpr, AnyValue):
 
         return base.group_by(expr).aggregate(metric)
 
-    def first(self) -> ColumnExpr:
+    def first(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.FirstValue(self).to_expr()
 
-    def last(self) -> ColumnExpr:
+    def last(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.LastValue(self).to_expr()
 
-    def rank(self) -> ColumnExpr:
+    def rank(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.MinRank(self).to_expr()
 
-    def dense_rank(self) -> ColumnExpr:
+    def dense_rank(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.DenseRank(self).to_expr()
 
-    def percent_rank(self) -> ColumnExpr:
+    def percent_rank(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.PercentRank(self).to_expr()
 
-    def cummin(self) -> ColumnExpr:
+    def cume_dist(self) -> Column:
+        import ibis.expr.operations as ops
+
+        return ops.CumeDist(self).to_expr()
+
+    def cummin(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.CumulativeMin(self).to_expr()
 
-    def cummax(self) -> ColumnExpr:
+    def cummax(self) -> Column:
         import ibis.expr.operations as ops
 
         return ops.CumulativeMax(self).to_expr()
@@ -786,8 +817,8 @@ class AnyColumn(ColumnExpr, AnyValue):
     def lag(
         self,
         offset: int | ir.IntegerValue | None = None,
-        default: ValueExpr | None = None,
-    ) -> ColumnExpr:
+        default: Value | None = None,
+    ) -> Column:
         import ibis.expr.operations as ops
 
         return ops.Lag(self, offset, default).to_expr()
@@ -795,8 +826,8 @@ class AnyColumn(ColumnExpr, AnyValue):
     def lead(
         self,
         offset: int | ir.IntegerValue | None = None,
-        default: ValueExpr | None = None,
-    ) -> ColumnExpr:
+        default: Value | None = None,
+    ) -> Column:
         import ibis.expr.operations as ops
 
         return ops.Lead(self, offset, default).to_expr()
@@ -806,7 +837,7 @@ class AnyColumn(ColumnExpr, AnyValue):
 
         return ops.NTile(self, buckets).to_expr()
 
-    def nth(self, n: int | ir.IntegerValue) -> ColumnExpr:
+    def nth(self, n: int | ir.IntegerValue) -> Column:
         """Return the `n`th value over a window.
 
         Parameters
@@ -816,7 +847,7 @@ class AnyColumn(ColumnExpr, AnyValue):
 
         Returns
         -------
-        ColumnExpr
+        Column
             The nth value over a window
         """
         import ibis.expr.operations as ops
@@ -825,40 +856,28 @@ class AnyColumn(ColumnExpr, AnyValue):
 
 
 @public
-class NullValue(AnyValue):
+class NullValue(Value):
     pass  # noqa: E701,E302
 
 
 @public
-class NullScalar(AnyScalar, NullValue):
+class NullScalar(Scalar, NullValue):
     pass  # noqa: E701,E302
 
 
 @public
-class NullColumn(AnyColumn, NullValue):
+class NullColumn(Column, NullValue):
     pass  # noqa: E701,E302
 
 
-# TODO(kszucs): should remove the ColumnExpr base class?
 @public
-class ListExpr(ColumnExpr, AnyValue):
+class ValueList(Value, Sequence[Value]):
     @property
     def values(self):
         return self.op().values
 
-    def __iter__(self):
-        return iter(self.values)
-
     def __getitem__(self, key):
         return self.values[key]
-
-    def __add__(self, other):
-        other_values = tuple(getattr(other, 'values', other))
-        return type(self.op())(self.values + other_values).to_expr()
-
-    def __radd__(self, other):
-        other_values = tuple(getattr(other, 'values', other))
-        return type(self.op())(other_values + self.values).to_expr()
 
     def __bool__(self):
         return bool(self.values)
@@ -885,7 +904,7 @@ def null():
 
 
 @public
-def literal(value: Any, type: dt.DataType | str | None = None) -> ScalarExpr:
+def literal(value: Any, type: dt.DataType | str | None = None) -> Scalar:
     """Create a scalar expression from a Python value.
 
     !!! tip "Use specific functions for arrays, structs and maps"
@@ -912,7 +931,7 @@ def literal(value: Any, type: dt.DataType | str | None = None) -> ScalarExpr:
 
     Returns
     -------
-    ScalarExpr
+    Scalar
         An expression representing a literal value
 
     Examples
@@ -980,3 +999,14 @@ def literal(value: Any, type: dt.DataType | str | None = None) -> ScalarExpr:
     else:
         value = dt._normalize(dtype, value)
         return ops.Literal(value, dtype=dtype).to_expr()
+
+
+public(
+    ValueExpr=Value,
+    ScalarExpr=Scalar,
+    ColumnExpr=Column,
+    AnyValue=Value,
+    AnyScalar=Scalar,
+    AnyColumn=Column,
+    ListExpr=ValueList,
+)

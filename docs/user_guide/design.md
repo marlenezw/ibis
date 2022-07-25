@@ -48,7 +48,7 @@ columns, or scalars.
 <!-- prettier-ignore-start -->
 Examples of expression types include
 [`StringValue`][ibis.expr.types.StringValue] and
-[`TableExpr`][ibis.expr.types.TableExpr].
+[`Table`][ibis.expr.types.Table].
 <!-- prettier-ignore-end -->
 
 <!-- prettier-ignore-start -->
@@ -74,9 +74,9 @@ An example of usage is a node that representats a logarithm operation:
 ```python
 
 import ibis.expr.rules as rlz
-from ibis.expr.operations import ValueOp
+from ibis.expr.operations import Value
 
-class Log(ValueOp):
+class Log(Value):
    # A double scalar or column
    arg = rlz.double
    # Optional argument, defaults to None

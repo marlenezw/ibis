@@ -10,11 +10,11 @@ if TYPE_CHECKING:
     from ibis.expr import types as ir
 
 from ibis.expr.types.core import Expr, _binop
-from ibis.expr.types.generic import AnyColumn, AnyScalar, AnyValue
+from ibis.expr.types.generic import Column, Scalar, Value
 
 
 @public
-class TemporalValue(AnyValue):
+class TemporalValue(Value):
     def strftime(self, format_str: str) -> ir.StringValue:
         """Format timestamp according to `format_str`.
 
@@ -37,12 +37,12 @@ class TemporalValue(AnyValue):
 
 
 @public
-class TemporalScalar(AnyScalar, TemporalValue):
+class TemporalScalar(Scalar, TemporalValue):
     pass  # noqa: E701,E302
 
 
 @public
-class TemporalColumn(AnyColumn, TemporalValue):
+class TemporalColumn(Column, TemporalValue):
     pass  # noqa: E701,E302
 
 
@@ -483,7 +483,7 @@ class TimestampColumn(TemporalColumn, TimestampValue):
 
 
 @public
-class IntervalValue(AnyValue):
+class IntervalValue(Value):
     def to_unit(self, target_unit: str) -> IntervalValue:
         """Convert this interval to units of `target_unit`."""
         import ibis.expr.operations as ops
@@ -622,14 +622,20 @@ class IntervalValue(AnyValue):
 
     __neg__ = negate
 
+    @staticmethod
+    def __negate_op__():
+        import ibis.expr.operations as ops
+
+        return ops.Negate
+
 
 @public
-class IntervalScalar(AnyScalar, IntervalValue):
+class IntervalScalar(Scalar, IntervalValue):
     pass  # noqa: E701,E302
 
 
 @public
-class IntervalColumn(AnyColumn, IntervalValue):
+class IntervalColumn(Column, IntervalValue):
     pass  # noqa: E701,E302
 
 

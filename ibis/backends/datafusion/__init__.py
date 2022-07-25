@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
-import datafusion as df
 import pyarrow as pa
 
 import ibis.common.exceptions as com
@@ -13,6 +13,11 @@ import ibis.expr.schema as sch
 import ibis.expr.types as ir
 from ibis.backends.base import BaseBackend
 from ibis.backends.datafusion.compiler import translate
+
+try:
+    from datafusion import ExecutionContext as SessionContext
+except ImportError:
+    from datafusion import SessionContext
 
 
 def _to_pyarrow_table(frame):
@@ -32,16 +37,13 @@ class Backend(BaseBackend):
 
     @property
     def version(self):
-        try:
-            import importlib.metadata as importlib_metadata
-        except ImportError:
-            # TODO: remove this when Python 3.9 support is dropped
-            import importlib_metadata
-        return importlib_metadata.version("datafusion")
+        import importlib.metadata
+
+        return importlib.metadata.version("datafusion")
 
     def do_connect(
         self,
-        config: Mapping[str, str | Path] | df.ExecutionContext,
+        config: Mapping[str, str | Path] | SessionContext,
     ) -> None:
         """Create a Datafusion backend for use with Ibis.
 
@@ -56,10 +58,10 @@ class Backend(BaseBackend):
         >>> config = {"t": "path/to/file.parquet", "s": "path/to/file.csv"}
         >>> ibis.datafusion.connect(config)
         """
-        if isinstance(config, df.ExecutionContext):
+        if isinstance(config, SessionContext):
             self._context = config
         else:
-            self._context = df.ExecutionContext()
+            self._context = SessionContext()
 
         for name, path in config.items():
             strpath = str(path)
@@ -96,7 +98,7 @@ class Backend(BaseBackend):
         self,
         name: str,
         schema: sch.Schema | None = None,
-    ) -> ir.TableExpr:
+    ) -> ir.Table:
         """Get an ibis expression representing a DataFusion table.
 
         Parameters
@@ -108,7 +110,7 @@ class Backend(BaseBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             A table expression
         """
         catalog = self._context.catalog()
@@ -159,17 +161,17 @@ class Backend(BaseBackend):
         limit: str = 'default',
         **kwargs: Any,
     ):
-        if isinstance(expr, ir.TableExpr):
+        if isinstance(expr, ir.Table):
             frame = self.compile(expr, params, **kwargs)
             table = _to_pyarrow_table(frame)
             return table.to_pandas()
-        elif isinstance(expr, ir.ColumnExpr):
+        elif isinstance(expr, ir.Column):
             # expression must be named for the projection
             expr = expr.name('tmp').to_projection()
             frame = self.compile(expr, params, **kwargs)
             table = _to_pyarrow_table(frame)
             return table['tmp'].to_pandas()
-        elif isinstance(expr, ir.ScalarExpr):
+        elif isinstance(expr, ir.Scalar):
             if expr.op().root_tables():
                 # there are associated datafusion tables so convert the expr
                 # to a selection which we can directly convert to a datafusion
@@ -197,12 +199,17 @@ class Backend(BaseBackend):
         return translate(expr)
 
     @classmethod
-    def has_operation(cls, operation: type[ops.ValueOp]) -> bool:
+    @lru_cache
+    def _get_operations(cls):
         from ibis.backends.datafusion.compiler import translate
 
-        op_classes = translate.registry
+        return frozenset(
+            op for op in translate.registry if issubclass(op, ops.Value)
+        )
+
+    @classmethod
+    def has_operation(cls, operation: type[ops.Value]) -> bool:
+        op_classes = cls._get_operations()
         return operation in op_classes or any(
-            issubclass(operation, op_impl)
-            for op_impl in op_classes
-            if issubclass(op_impl, ops.ValueOp)
+            issubclass(operation, op_impl) for op_impl in op_classes
         )

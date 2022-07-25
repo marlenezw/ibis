@@ -132,13 +132,6 @@ The best way to interact with a single table is through the
 Ibis delegates all HDFS interaction to the
 [`fsspec`](https://filesystem-spec.readthedocs.io/en/latest/) library.
 
-<!-- prettier-ignore-start -->
-::: ibis.backends.impala.hdfs_connect
-    rendering:
-      heading_level: 3
-
-<!-- prettier-ignore-end -->
-
 ## The Impala client object
 
 To use Ibis with Impala, you first must connect to a cluster using the
@@ -181,9 +174,9 @@ expression referencing a physical Impala table:
 table = client.table('functional_alltypes', database='ibis_testing')
 ```
 
-`ImpalaTable` is a Python subclass of the more general Ibis `TableExpr`
+`ImpalaTable` is a Python subclass of the more general Ibis `Table`
 that has additional Impala-specific methods. So you can use it
-interchangeably with any code expecting a `TableExpr`.
+interchangeably with any code expecting a `Table`.
 
 Like all table expressions in Ibis, `ImpalaTable` has a `schema` method
 you can use to examine its schema:

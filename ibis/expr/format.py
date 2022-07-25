@@ -78,7 +78,7 @@ def fmt_truncated(
     return sep.join([*pieces[:first_n], ellipsis, *pieces[-last_m:]])
 
 
-def selection_maxlen(expressions: Iterable[ir.ValueExpr]) -> int:
+def selection_maxlen(expressions: Iterable[ir.Value]) -> int:
     """Compute the length of the longest name of input expressions.
 
     Parameters
@@ -119,7 +119,7 @@ def _fmt_root_table_node(op: ops.TableNode, **kwargs: Any) -> str:
 
 @fmt_root.register
 def _fmt_root_value_op(
-    op: ops.ValueOp, *, name: str, aliases: Aliases, **_: Any
+    op: ops.Value, *, name: str, aliases: Aliases, **_: Any
 ) -> str:
     value = fmt_value(op, aliases=aliases)
     prefix = f"{name}: " if name is not None else ""
@@ -431,7 +431,7 @@ def _fmt_table_op_limit(op: ops.Limit, *, aliases: Aliases, **_: Any) -> str:
 
 
 @functools.singledispatch
-def fmt_selection_column(value_expr: ir.ValueExpr, **_: Any) -> str:
+def fmt_selection_column(value_expr: ir.Value, **_: Any) -> str:
     assert False, (
         "expression type not implemented for "
         f"fmt_selection_column: {type(value_expr)}"
@@ -445,7 +445,7 @@ def type_info(datatype: dt.DataType) -> str:
 
 @fmt_selection_column.register
 def _fmt_selection_column_value_expr(
-    expr: ir.ValueExpr, *, aliases: Aliases, maxlen: int = 0
+    expr: ir.Value, *, aliases: Aliases, maxlen: int = 0
 ) -> str:
     raw_name = expr._safe_name
     assert raw_name is not None, (
@@ -460,8 +460,22 @@ def _fmt_selection_column_value_expr(
 
 
 @fmt_selection_column.register
+def _fmt_selection_column_destruct_value_expr(
+    expr: ir.DestructValue, *, aliases: Aliases, maxlen: int = 0
+) -> str:
+    # Destruct values can create one or more columns. The names of
+    # these columns are the names of the fields in the struct.
+    joined_field_names = ", ".join(expr.type().names)
+    name = f"({joined_field_names}):"
+    # the additional 1 is for the colon
+    aligned_name = f"{name:<{maxlen + 1}}"
+    value = fmt_value(expr, aliases=aliases)
+    return f"{aligned_name} {value}{type_info(expr.type())}"
+
+
+@fmt_selection_column.register
 def _fmt_selection_column_table_expr(
-    expr: ir.TableExpr, *, aliases: Aliases, **_: Any
+    expr: ir.Table, *, aliases: Aliases, **_: Any
 ) -> str:
     return str(aliases[expr.op()])
 
@@ -533,7 +547,7 @@ def _fmt_value_node(op: ops.Node, **_: Any) -> str:
 
 
 @fmt_value.register
-def _fmt_value_binary_op(op: ops.BinaryOp, *, aliases: Aliases) -> str:
+def _fmt_value_binary_op(op: ops.Binary, *, aliases: Aliases) -> str:
     left = fmt_value(op.left, aliases=aliases)
     right = fmt_value(op.right, aliases=aliases)
     try:
@@ -564,7 +578,7 @@ def _fmt_value_datatype(datatype: dt.DataType, **_: Any) -> str:
 
 
 @fmt_value.register
-def _fmt_value_value_op(op: ops.ValueOp, *, aliases: Aliases) -> str:
+def _fmt_value_value_op(op: ops.Value, *, aliases: Aliases) -> str:
     args = []
     # loop over argument names and original expression
     for argname, orig_expr in zip(op.argnames, op.args):
@@ -615,13 +629,6 @@ def _fmt_value_sort_key(op: ops.SortKey, *, aliases: Aliases) -> str:
     expr = fmt_value(op.expr, aliases=aliases)
     sort_direction = " asc" if op.ascending else "desc"
     return f"{sort_direction}|{expr}"
-
-
-@fmt_value.register
-def _fmt_topk(op: ops.TopK, *, aliases: Aliases) -> str:
-    arg = fmt_value(op.arg, aliases=aliases)
-    by = fmt_value(op.by, aliases=aliases)
-    return f"TopK({arg}, {op.k}, {by})"
 
 
 @fmt_value.register

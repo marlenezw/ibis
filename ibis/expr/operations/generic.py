@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 import datetime
 import decimal
 import enum
@@ -11,13 +12,15 @@ import numpy as np
 import pandas as pd
 from public import public
 
+import ibis.expr.datatypes as dt
+import ibis.expr.rules as rlz
+import ibis.expr.types as ir
+import ibis.util as util
 from ibis.common import exceptions as com
+from ibis.common.grounds import Singleton
 from ibis.common.validators import immutable_property
-from ibis.expr import datatypes as dt
-from ibis.expr import rules as rlz
-from ibis.expr import types as ir
-from ibis.expr.operations.core import Node, UnaryOp, ValueOp, distinct_roots
-from ibis.util import frozendict
+from ibis.expr.operations.core import Node, Unary, Value, distinct_roots
+from ibis.util import deprecated, frozendict
 
 try:
     import shapely
@@ -28,8 +31,8 @@ else:
 
 
 @public
-class TableColumn(ValueOp):
-    """Selects a column from a `TableExpr`."""
+class TableColumn(Value):
+    """Selects a column from a `Table`."""
 
     table = rlz.table
     name = rlz.instance_of((str, int))
@@ -49,7 +52,8 @@ class TableColumn(ValueOp):
 
         super().__init__(table=table, name=name)
 
-    def parent(self):
+    @util.deprecated(version="4.0.0", instead="Use `table` property instead")
+    def parent(self):  # pragma: no cover
         return self.table
 
     def resolve_name(self):
@@ -63,11 +67,12 @@ class TableColumn(ValueOp):
 
     @property
     def output_dtype(self):
-        return self.table._get_type(self.name)
+        schema = self.table.schema()
+        return schema[self.name]
 
 
 @public
-class RowID(ValueOp):
+class RowID(Value):
     """The row number (an autonumeric) of the returned result."""
 
     output_shape = rlz.Shape.COLUMNAR
@@ -81,13 +86,14 @@ class RowID(ValueOp):
 
 
 @public
+@util.deprecated(version="4.0.0", instead="")
 def find_all_base_tables(expr, memo=None):
     if memo is None:
         memo = {}
 
     node = expr.op()
 
-    if isinstance(expr, ir.TableExpr) and node.blocks():
+    if isinstance(expr, ir.Table) and node.blocks():
         if expr not in memo:
             memo[node] = expr
         return memo
@@ -100,7 +106,7 @@ def find_all_base_tables(expr, memo=None):
 
 
 @public
-class TableArrayView(ValueOp):
+class TableArrayView(Value):
 
     """
     (Temporary?) Helper operation class for SQL translation (fully formed table
@@ -113,7 +119,8 @@ class TableArrayView(ValueOp):
 
     @property
     def output_dtype(self):
-        return self.table._get_type(self.name)
+        schema = self.table.schema()
+        return schema[self.name]
 
     @property
     def name(self):
@@ -121,7 +128,7 @@ class TableArrayView(ValueOp):
 
 
 @public
-class Cast(ValueOp):
+class Cast(Value):
     """Explicitly cast value to a specific data type."""
 
     arg = rlz.any
@@ -134,12 +141,12 @@ class Cast(ValueOp):
 
 
 @public
-class TypeOf(UnaryOp):
+class TypeOf(Unary):
     output_dtype = dt.string
 
 
 @public
-class IsNull(UnaryOp):
+class IsNull(Unary):
     """Return true if values are null.
 
     Returns
@@ -152,7 +159,7 @@ class IsNull(UnaryOp):
 
 
 @public
-class NotNull(UnaryOp):
+class NotNull(Unary):
     """Returns true if values are not null
 
     Returns
@@ -165,12 +172,12 @@ class NotNull(UnaryOp):
 
 
 @public
-class ZeroIfNull(UnaryOp):
+class ZeroIfNull(Unary):
     output_dtype = rlz.dtype_like("arg")
 
 
 @public
-class IfNull(ValueOp):
+class IfNull(Value):
     """
     Equivalent to (but perhaps implemented differently):
 
@@ -186,7 +193,7 @@ class IfNull(ValueOp):
 
 
 @public
-class NullIf(ValueOp):
+class NullIf(Value):
     """Set values to NULL if they equal the null_if_expr"""
 
     arg = rlz.any
@@ -196,7 +203,7 @@ class NullIf(ValueOp):
 
 
 @public
-class CoalesceLike(ValueOp):
+class CoalesceLike(Value):
 
     # According to Impala documentation:
     # Return type: same as the initial argument value, except that integer
@@ -232,7 +239,7 @@ class Least(CoalesceLike):
 
 
 @public
-class Literal(ValueOp):
+class Literal(Value):
     value = rlz.one_of(
         (
             rlz.instance_of(
@@ -259,7 +266,6 @@ class Literal(ValueOp):
                     decimal.Decimal,
                 )
             ),
-            # this seems buggy
             rlz.is_computable_input,
         )
     )
@@ -273,7 +279,7 @@ class Literal(ValueOp):
 
 
 @public
-class NullLiteral(Literal):
+class NullLiteral(Literal, Singleton):
     """Typeless NULL literal"""
 
     value = rlz.optional(type(None))
@@ -281,7 +287,7 @@ class NullLiteral(Literal):
 
 
 @public
-class ScalarParameter(ValueOp):
+class ScalarParameter(Value):
     _counter = itertools.count()
 
     dtype = rlz.datatype
@@ -307,14 +313,14 @@ class ScalarParameter(ValueOp):
 
 
 @public
-class ValueList(ValueOp):
+class ValueList(Value):
     """Data structure for a list of value expressions"""
 
-    # NOTE: this proxies the ValueOp behaviour to the underlying values
+    # NOTE: this proxies the Value behaviour to the underlying values
 
     values = rlz.tuple_of(rlz.any)
 
-    output_type = ir.ListExpr
+    output_type = ir.ValueList
     output_dtype = rlz.dtype_like("values")
     output_shape = rlz.shape_like("values")
 
@@ -323,7 +329,7 @@ class ValueList(ValueOp):
 
 
 @public
-class Constant(ValueOp):
+class Constant(Value):
     output_shape = rlz.Shape.SCALAR
 
 
@@ -348,7 +354,7 @@ class Pi(Constant):
 
 
 @public
-class StructField(ValueOp):
+class StructField(Value):
     arg = rlz.struct
     field = rlz.instance_of(str)
 
@@ -368,19 +374,36 @@ class StructField(ValueOp):
 
 
 @public
-class DecimalPrecision(UnaryOp):
+class StructColumn(Value):
+    names = rlz.tuple_of(rlz.instance_of(str), min_length=1)
+    values = rlz.tuple_of(rlz.any, min_length=1)
+
+    output_shape = rlz.Shape.COLUMNAR
+
+    @immutable_property
+    def output_dtype(self):
+        return dt.Struct.from_tuples(
+            zip(self.names, (value.type() for value in self.values))
+        )
+
+    def root_tables(self):
+        return distinct_roots(*self.values)
+
+
+@public
+class DecimalPrecision(Unary):
     arg = rlz.decimal
     output_dtype = dt.int32
 
 
 @public
-class DecimalScale(UnaryOp):
+class DecimalScale(Unary):
     arg = rlz.decimal
     output_dtype = dt.int32
 
 
 @public
-class Hash(ValueOp):
+class Hash(Value):
     arg = rlz.any
     how = rlz.isin({'fnv', 'farm_fingerprint'})
 
@@ -389,7 +412,7 @@ class Hash(ValueOp):
 
 
 @public
-class HashBytes(ValueOp):
+class HashBytes(Value):
     arg = rlz.one_of({rlz.value(dt.string), rlz.value(dt.binary)})
     how = rlz.isin({'md5', 'sha1', 'sha256', 'sha512'})
 
@@ -397,9 +420,13 @@ class HashBytes(ValueOp):
     output_shape = rlz.shape_like("arg")
 
 
+@deprecated(
+    instead="do nothing; SummaryFilter is no longer used internally",
+    version="4.0.0",
+)
 @public
-class SummaryFilter(ValueOp):
-    expr = rlz.instance_of(ir.TopKExpr)
+class SummaryFilter(Value):
+    expr = rlz.instance_of(ir.TopK)
 
     output_dtype = dt.boolean
     output_shape = rlz.Shape.COLUMNAR
@@ -411,19 +438,13 @@ class SummaryFilter(ValueOp):
 class TopK(Node):
     arg = rlz.column(rlz.any)
     k = rlz.non_negative_integer
-    by = rlz.one_of(
-        (
-            rlz.function_of("arg", preprocess=ir.relations.find_base_table),
-            rlz.any,
-        )
-    )
+    by = rlz.one_of((rlz.function_of(rlz.base_table_of("arg")), rlz.any))
+    output_type = ir.TopK
 
-    output_type = ir.TopKExpr
-
-    def blocks(self):
+    def blocks(self):  # pragma: no cover
         return True
 
-    def root_tables(self):
+    def root_tables(self):  # pragma: no cover
         args = (arg for arg in self.flat_args() if isinstance(arg, ir.Expr))
         return distinct_roots(*args)
 
@@ -432,7 +453,7 @@ class TopK(Node):
 # cases, results and default optional arguments like they are in
 # api.py
 @public
-class SimpleCase(ValueOp):
+class SimpleCase(Value):
     base = rlz.any
     cases = rlz.value_list_of(rlz.any)
     results = rlz.value_list_of(rlz.any)
@@ -452,12 +473,12 @@ class SimpleCase(ValueOp):
         # TODO(kszucs): we could extend the functionality of
         # rlz.shape_like to support varargs with .flat_args()
         # to define a subset of input arguments
-        values = self.results + [self.default]
+        values = [*self.results, self.default]
         return rlz.highest_precedence_dtype(values)
 
 
 @public
-class SearchedCase(ValueOp):
+class SearchedCase(Value):
     cases = rlz.value_list_of(rlz.boolean)
     results = rlz.value_list_of(rlz.any)
     default = rlz.any
@@ -473,5 +494,11 @@ class SearchedCase(ValueOp):
 
     @immutable_property
     def output_dtype(self):
-        exprs = self.results + [self.default]
+        exprs = [*self.results, self.default]
         return rlz.highest_precedence_dtype(exprs)
+
+
+class _Negatable(abc.ABC):
+    @abc.abstractmethod
+    def negate(self):  # pragma: no cover
+        ...

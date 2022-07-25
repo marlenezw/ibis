@@ -22,16 +22,10 @@ from typing import Iterable, Sequence
 import toolz
 
 import ibis.expr.analysis as L
-import ibis.expr.operations as ops
 import ibis.expr.types as ir
 import ibis.expr.window as _window
 import ibis.util as util
-
-
-def _resolve_exprs(table, exprs):
-    exprs = util.promote_list(exprs)
-    return table._resolve(exprs)
-
+from ibis.expr.deferred import Deferred
 
 _function_types = tuple(
     filter(
@@ -51,19 +45,25 @@ _function_types = tuple(
 def _get_group_by_key(table, value):
     if isinstance(value, str):
         return table[value]
-    if isinstance(value, _function_types):
+    elif isinstance(value, _function_types):
         return value(table)
-    return value
+    elif isinstance(value, Deferred):
+        return value.resolve(table)
+    else:
+        return value
 
 
-class GroupedTableExpr:
+class GroupedTable:
     """An intermediate table expression to hold grouping information."""
 
     def __init__(
         self, table, by, having=None, order_by=None, window=None, **expressions
     ):
         self.table = table
-        self.by = util.promote_list(by if by is not None else []) + [
+        self.by = [
+            _get_group_by_key(table, v)
+            for v in util.promote_list(by if by is not None else [])
+        ] + [
             _get_group_by_key(table, v).name(k)
             for k, v in sorted(expressions.items(), key=toolz.first)
         ]
@@ -93,7 +93,7 @@ class GroupedTableExpr:
             metrics, by=self.by, having=self._having, **kwds
         )
 
-    def having(self, expr: ir.BooleanScalar) -> GroupedTableExpr:
+    def having(self, expr: ir.BooleanScalar) -> GroupedTable:
         """Add a post-aggregation result filter `expr`.
 
         Parameters
@@ -103,22 +103,18 @@ class GroupedTableExpr:
 
         Returns
         -------
-        GroupedTableExpr
+        GroupedTable
             A grouped table expression
         """
-        exprs = util.promote_list(expr)
-        new_having = self._having + exprs
-        return GroupedTableExpr(
+        return self.__class__(
             self.table,
             self.by,
-            having=new_having,
+            having=self._having + util.promote_list(expr),
             order_by=self._order_by,
             window=self._window,
         )
 
-    def order_by(
-        self, expr: ir.ValueExpr | Iterable[ir.ValueExpr]
-    ) -> GroupedTableExpr:
+    def order_by(self, expr: ir.Value | Iterable[ir.Value]) -> GroupedTable:
         """Sort a grouped table expression by `expr`.
 
         Notes
@@ -132,23 +128,21 @@ class GroupedTableExpr:
 
         Returns
         -------
-        GroupedTableExpr
-            A sorted grouped GroupedTableExpr
+        GroupedTable
+            A sorted grouped GroupedTable
         """
-        exprs = util.promote_list(expr)
-        new_order = self._order_by + exprs
-        return GroupedTableExpr(
+        return self.__class__(
             self.table,
             self.by,
             having=self._having,
-            order_by=new_order,
+            order_by=self._order_by + util.promote_list(expr),
             window=self._window,
         )
 
     def mutate(
         self,
-        exprs: ir.ValueExpr | Sequence[ir.ValueExpr] | None = None,
-        **kwds: ir.ValueExpr,
+        exprs: ir.Value | Sequence[ir.Value] | None = None,
+        **kwds: ir.Value,
     ):
         """Return a table projection with window functions applied.
 
@@ -186,12 +180,12 @@ class GroupedTableExpr:
         Selection[r0]
           selections:
             r0
-            qux:  WindowOp(Lag(r0.baz), window=Window(group_by=[r0.foo], order_by=[desc|r0.bar], how='rows'))
-            qux2: WindowOp(Lead(r0.baz), window=Window(group_by=[r0.foo], order_by=[desc|r0.bar], how='rows'))
+            qux:  Window(Lag(r0.baz), window=Window(group_by=[r0.foo], order_by=[desc|r0.bar], how='rows'))
+            qux2: Window(Lead(r0.baz), window=Window(group_by=[r0.foo], order_by=[desc|r0.bar], how='rows'))
 
         Returns
         -------
-        TableExpr
+        Table
             A table expression with window functions applied
         """  # noqa: E501
         if exprs is None:
@@ -199,25 +193,23 @@ class GroupedTableExpr:
         else:
             exprs = util.promote_list(exprs)
 
-        kwd_keys = list(kwds.keys())
-        kwd_values = self.table._resolve(list(kwds.values()))
+        for name, expr in kwds.items():
+            expr = self.table._ensure_expr(expr)
+            exprs.append(expr.name(name))
 
-        for k, v in zip(kwd_keys, kwd_values):
-            exprs.append(v.name(k))
-
-        return self.projection([self.table] + exprs)
+        return self.projection([self.table, *exprs])
 
     def projection(self, exprs):
         """Project new columns out of the grouped table.
 
         See Also
         --------
-        ibis.expr.groupby.GroupedTableExpr.mutate
+        ibis.expr.groupby.GroupedTable.mutate
         """
         w = self._get_window()
         windowed_exprs = []
-        exprs = self.table._resolve(exprs)
-        for expr in exprs:
+        for expr in util.promote_list(exprs):
+            expr = self.table._ensure_expr(expr)
             expr = L.windowize_function(expr, w=w)
             windowed_exprs.append(expr)
         return self.table.projection(windowed_exprs)
@@ -233,18 +225,18 @@ class GroupedTableExpr:
             sorts = w.order_by + self._order_by
             preceding, following = w.preceding, w.following
 
-        sorts = [ops.sortkeys._to_sort_key(k, table=self.table) for k in sorts]
-
-        groups = _resolve_exprs(self.table, groups)
-
         return _window.window(
             preceding=preceding,
             following=following,
-            group_by=groups,
-            order_by=sorts,
+            group_by=list(
+                map(self.table._ensure_expr, util.promote_list(groups))
+            ),
+            order_by=list(
+                map(self.table._ensure_expr, util.promote_list(sorts))
+            ),
         )
 
-    def over(self, window: _window.Window) -> GroupedTableExpr:
+    def over(self, window: _window.Window) -> GroupedTable:
         """Add a window frame clause to be applied to child analytic expressions.
 
         Parameters
@@ -254,10 +246,10 @@ class GroupedTableExpr:
 
         Returns
         -------
-        GroupedTableExpr
+        GroupedTable
             A new grouped table expression
         """
-        return GroupedTableExpr(
+        return self.__class__(
             self.table,
             self.by,
             having=self._having,
@@ -265,7 +257,7 @@ class GroupedTableExpr:
             window=window,
         )
 
-    def count(self, metric_name: str = 'count') -> ir.TableExpr:
+    def count(self, metric_name: str = 'count') -> ir.Table:
         """Computing the number of rows per group.
 
         Parameters
@@ -275,7 +267,7 @@ class GroupedTableExpr:
 
         Returns
         -------
-        TableExpr
+        Table
             The aggregated table
         """
         metric = self.table.count().name(metric_name)

@@ -15,6 +15,7 @@ class TestConf(BackendTest, RoundAwayFromZero):
     # supports_divide_by_zero = True
     # returned_timestamp_unit = 'ns'
     bool_is_int = True
+    supports_structs = False
 
     @staticmethod
     def connect(data_directory: Path):
@@ -55,7 +56,7 @@ class TestConf(BackendTest, RoundAwayFromZero):
         return client
 
     @property
-    def functional_alltypes(self) -> ir.TableExpr:
+    def functional_alltypes(self) -> ir.Table:
         t = self.connection.table('functional_alltypes')
         return t.mutate(
             bool_col=t.bool_col == 1,

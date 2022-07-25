@@ -23,9 +23,11 @@ from typing import (
 import numpy as np
 import pandas as pd
 import parsy as p
+import toolz
 from multipledispatch import Dispatcher
 from public import public
 
+from ibis import util
 from ibis.common.exceptions import IbisTypeError, InputTypeError
 from ibis.common.grounds import Annotable, Comparable, Singleton
 from ibis.common.validators import (
@@ -61,7 +63,7 @@ def default(value, **kwargs) -> DataType:
 @dtype.register(str)
 def from_string(value: str) -> DataType:
     try:
-        return parse_type(value)
+        return parse(value)
     except SyntaxError:
         raise IbisTypeError(f'{value!r} cannot be parsed as a datatype')
 
@@ -440,7 +442,12 @@ class Decimal(DataType):
     @property
     def largest(self):
         """Return the largest type of decimal."""
-        return self.__class__(precision=None, scale=None)
+        return self.__class__(
+            precision=max(self.precision, 38)
+            if self.precision is not None
+            else None,
+            scale=max(self.scale, 2) if self.scale is not None else None,
+        )
 
     @property
     def _pretty_piece(self) -> str:
@@ -931,20 +938,62 @@ public(
 
 _STRING_REGEX = """('[^\n'\\\\]*(?:\\\\.[^\n'\\\\]*)*'|"[^\n"\\\\"]*(?:\\\\.[^\n"\\\\]*)*")"""  # noqa: E501
 
-_SPACES = p.regex(r'\s*', re.MULTILINE)
+SPACES = p.regex(r'\s*', re.MULTILINE)
 
 
+@public
 def spaceless(parser):
-    return _SPACES.then(parser).skip(_SPACES)
+    return SPACES.then(parser).skip(SPACES)
 
 
-def spaceless_string(s: str):
-    return spaceless(p.string(s, transform=str.lower))
+@public
+def spaceless_string(*strings: str):
+    return spaceless(
+        p.alt(*(p.string(string, transform=str.lower) for string in strings))
+    )
+
+
+RAW_NUMBER = p.digit.at_least(1).concat()
+PRECISION = SCALE = NUMBER = RAW_NUMBER.map(int)
+
+LPAREN = spaceless_string("(")
+RPAREN = spaceless_string(")")
+
+LBRACKET = spaceless_string("[")
+RBRACKET = spaceless_string("]")
+
+LANGLE = spaceless_string("<")
+RANGLE = spaceless_string(">")
+
+COMMA = spaceless_string(",")
+COLON = spaceless_string(":")
+SEMICOLON = spaceless_string(";")
+
+RAW_STRING = p.regex(_STRING_REGEX).map(ast.literal_eval)
+FIELD = p.regex("[a-zA-Z_][a-zA-Z_0-9]*")
+
+public(
+    COLON=COLON,
+    COMMA=COMMA,
+    FIELD=FIELD,
+    LANGLE=LANGLE,
+    LBRACKET=LBRACKET,
+    RBRACKET=RBRACKET,
+    LPAREN=LPAREN,
+    NUMBER=NUMBER,
+    PRECISION=PRECISION,
+    RANGLE=RANGLE,
+    RAW_STRING=RAW_STRING,
+    RPAREN=RPAREN,
+    SCALE=SCALE,
+    SEMICOLON=SEMICOLON,
+    SPACES=SPACES,
+)
 
 
 @public
 @functools.lru_cache(maxsize=100)
-def parse_type(text: str) -> DataType:
+def parse(text: str) -> DataType:
     """Parse a type from a [`str`][str] `text`.
 
     The default `maxsize` parameter for caching is chosen to cache the most
@@ -962,50 +1011,38 @@ def parse_type(text: str) -> DataType:
 
     >>> import ibis
     >>> import ibis.expr.datatypes as dt
-    >>> dt.parse_type("array<int64>")
+    >>> dt.parse("array<int64>")
     Array(value_type=Int64(nullable=True), nullable=True)
 
     You can avoid parsing altogether by constructing objects directly
 
     >>> import ibis
     >>> import ibis.expr.datatypes as dt
-    >>> ty = dt.parse_type("array<int64>")
+    >>> ty = dt.parse("array<int64>")
     >>> ty == dt.Array(dt.int64)
     True
     """
-    precision = scale = srid = p.digit.at_least(1).concat().map(int)
 
-    lparen = spaceless_string("(")
-    rparen = spaceless_string(")")
-
-    langle = spaceless_string("<")
-    rangle = spaceless_string(">")
-
-    comma = spaceless_string(",")
-    colon = spaceless_string(":")
-    semicolon = spaceless_string(";")
-
-    raw_string = p.regex(_STRING_REGEX).map(ast.literal_eval)
-
+    srid = NUMBER
     geotype = spaceless_string("geography") | spaceless_string("geometry")
 
     @p.generate
     def srid_geotype():
-        yield semicolon
+        yield SEMICOLON
         sr = yield srid
-        yield colon
+        yield COLON
         gt = yield geotype
         return (gt, sr)
 
     @p.generate
     def geotype_part():
-        yield colon
+        yield COLON
         gt = yield geotype
         return (gt, None)
 
     @p.generate
     def srid_part():
-        yield semicolon
+        yield SEMICOLON
         sr = yield srid
         return (None, sr)
 
@@ -1047,6 +1084,7 @@ def parse_type(text: str) -> DataType:
         | spaceless_string("category").result(category)
         | spaceless_string("geometry").result(GeoSpatial(geotype='geometry'))
         | spaceless_string("geography").result(GeoSpatial(geotype='geography'))
+        | spaceless_string("null").result(null)
         | geotype_parser("linestring", LineString)
         | geotype_parser("polygon", Polygon)
         | geotype_parser("point", Point)
@@ -1057,32 +1095,28 @@ def parse_type(text: str) -> DataType:
 
     @p.generate
     def varchar_or_char():
-        yield p.alt(
-            spaceless_string("varchar"), spaceless_string("char")
-        ).then(
-            lparen.then(p.digit.at_least(1).concat()).skip(rparen).optional()
+        yield spaceless_string("varchar", "char").then(
+            LPAREN.then(RAW_NUMBER).skip(RPAREN).optional()
         )
         return String()
 
     @p.generate
     def decimal():
         yield spaceless_string("decimal")
-        prec, sc = (
-            yield lparen.then(
-                p.seq(precision.skip(comma), scale).combine(
-                    lambda prec, scale: (prec, scale)
-                )
+        precision, scale = (
+            yield LPAREN.then(
+                p.seq(spaceless(PRECISION).skip(COMMA), spaceless(SCALE))
             )
-            .skip(rparen)
+            .skip(RPAREN)
             .optional()
         ) or (None, None)
-        return Decimal(precision=prec, scale=sc)
+        return Decimal(precision=precision, scale=scale)
 
     @p.generate
     def parened_string():
-        yield lparen
-        s = yield raw_string
-        yield rparen
+        yield LPAREN
+        s = yield RAW_STRING
+        yield RPAREN
         return s
 
     @p.generate
@@ -1093,18 +1127,19 @@ def parse_type(text: str) -> DataType:
 
     @p.generate
     def angle_type():
-        yield langle
+        yield LANGLE
         value_type = yield ty
-        yield rangle
+        yield RANGLE
         return value_type
 
     @p.generate
     def interval():
         yield spaceless_string("interval")
         value_type = yield angle_type.optional()
-        un = yield parened_string.optional()
+        unit = yield parened_string.optional()
         return Interval(
-            value_type=value_type, unit=un if un is not None else 's'
+            value_type=value_type,
+            unit=unit if unit is not None else "s",
         )
 
     @p.generate
@@ -1122,29 +1157,36 @@ def parse_type(text: str) -> DataType:
     @p.generate
     def map():
         yield spaceless_string("map")
-        yield langle
+        yield LANGLE
         key_type = yield primitive
-        yield comma
+        yield COMMA
         value_type = yield ty
-        yield rangle
+        yield RANGLE
         return Map(key_type, value_type)
 
-    field = spaceless(p.regex("[a-zA-Z_][a-zA-Z_0-9]*"))
+    spaceless_field = spaceless(FIELD)
 
     @p.generate
     def struct():
         yield spaceless_string("struct")
-        yield langle
+        yield LANGLE
         field_names_types = yield (
-            p.seq(field.skip(colon), ty)
+            p.seq(spaceless_field.skip(COLON), ty)
             .combine(lambda field, ty: (field, ty))
-            .sep_by(comma)
+            .sep_by(COMMA)
         )
-        yield rangle
+        yield RANGLE
         return Struct.from_tuples(field_names_types)
 
+    @p.generate
+    def nullable():
+        yield spaceless_string("!")
+        parsed_ty = yield ty
+        return parsed_ty(nullable=False)
+
     ty = (
-        timestamp
+        nullable
+        | timestamp
         | primitive
         | decimal
         | varchar_or_char
@@ -1167,6 +1209,15 @@ def parse_type(text: str) -> DataType:
     return ty.parse(text)
 
 
+@util.deprecated(
+    instead=f"use {parse.__module__}.{parse.__name__}",
+    version="4.0",
+)
+@public
+def parse_type(*args, **kwargs):
+    return parse(*args, **kwargs)
+
+
 def _get_timedelta_units(
     timedelta: datetime.timedelta | pd.Timedelta,
 ) -> list[str]:
@@ -1183,13 +1234,15 @@ def _get_timedelta_units(
 
 
 def higher_precedence(left: DataType, right: DataType) -> DataType:
+    nullable = left.nullable or right.nullable
+
     if castable(left, right, upcast=True):
-        return right
+        return right(nullable=nullable)
     elif castable(right, left, upcast=True):
-        return left
+        return left(nullable=nullable)
 
     raise IbisTypeError(
-        f'Cannot compute precedence for {left} and {right} types'
+        f'Cannot compute precedence for `{left}` and `{right}` types'
     )
 
 
@@ -1218,10 +1271,15 @@ def infer_map(value: Mapping[typing.Any, typing.Any]) -> Map:
     """Infer the [`Map`][ibis.expr.datatypes.Map] type of `value`."""
     if not value:
         return Map(null, null)
-    return Map(
-        highest_precedence(map(infer, value.keys())),
-        highest_precedence(map(infer, value.values())),
-    )
+    try:
+        return Map(
+            highest_precedence(map(infer, value.keys())),
+            highest_precedence(map(infer, value.values())),
+        )
+    except IbisTypeError:
+        return Struct.from_dict(
+            toolz.valmap(infer, value, factory=type(value))
+        )
 
 
 @infer.register((list, tuple))
@@ -1365,7 +1423,17 @@ def can_cast_any(source: DataType, target: DataType, **kwargs) -> bool:
 
 @castable.register(Null, DataType)
 def can_cast_null(source: DataType, target: DataType, **kwargs) -> bool:
-    return target.nullable
+    # The null type is castable to any type, even if the target type is *not*
+    # nullable.
+    #
+    # We handle the promotion of `null + !T -> T` at the `castable` call site.
+    #
+    # It might be possible to build a system with a single function that tries
+    # to promote types and use the exception to indicate castability, but that
+    # is a deeper refactor to be tackled later.
+    #
+    # See https://github.com/ibis-project/ibis/issues/2891 for the bug report
+    return True
 
 
 Integral = TypeVar('Integral', SignedInteger, UnsignedInteger)
@@ -1614,7 +1682,9 @@ def _int(typ: Integer, value: float) -> float:
     return int(value)
 
 
-@_normalize.register(Floating, (int, float, np.integer, np.floating))
+@_normalize.register(
+    Floating, (int, float, np.integer, np.floating, typing.SupportsFloat)
+)
 def _float(typ: Floating, value: float) -> float:
     return float(value)
 

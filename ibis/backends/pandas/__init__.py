@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from functools import lru_cache
 from typing import Any, MutableMapping
 
 import pandas as pd
@@ -61,7 +62,7 @@ class BasePandasBackend(BaseBackend):
         df: pd.DataFrame,
         name: str = 'df',
         client: BasePandasBackend | None = None,
-    ) -> ir.TableExpr:
+    ) -> ir.Table:
         """Construct an ibis table from a pandas DataFrame.
 
         Parameters
@@ -76,7 +77,7 @@ class BasePandasBackend(BaseBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             A table expression
         """
         if client is None:
@@ -164,16 +165,30 @@ class BasePandasBackend(BaseBackend):
         return cls.backend_table_type(obj)
 
     @classmethod
-    def has_operation(cls, operation: type[ops.ValueOp]) -> bool:
-        execution = importlib.import_module(
-            f"ibis.backends.{cls.name}.execution"
-        )
+    @lru_cache
+    def _get_operations(cls):
+        backend = f"ibis.backends.{cls.name}"
+
+        execution = importlib.import_module(f"{backend}.execution")
         execute_node = execution.execute_node
-        op_classes = {op for op, *_ in execute_node.funcs.keys()}
+
+        # import UDF to pick up AnalyticVectorizedUDF and others
+        importlib.import_module(f"{backend}.udf")
+
+        dispatch = importlib.import_module(f"{backend}.dispatch")
+        pre_execute = dispatch.pre_execute
+
+        return frozenset(
+            op
+            for op, *_ in execute_node.funcs.keys() | pre_execute.funcs.keys()
+            if issubclass(op, ops.Value)
+        )
+
+    @classmethod
+    def has_operation(cls, operation: type[ops.Value]) -> bool:
+        op_classes = cls._get_operations()
         return operation in op_classes or any(
-            issubclass(operation, op_impl)
-            for op_impl in op_classes
-            if issubclass(op_impl, ops.ValueOp)
+            issubclass(operation, op_impl) for op_impl in op_classes
         )
 
 
@@ -185,7 +200,7 @@ class Backend(BasePandasBackend):
     def execute(self, query, params=None, limit='default', **kwargs):
         from ibis.backends.pandas.core import execute_and_reset
 
-        if limit != 'default':
+        if limit != 'default' and limit is not None:
             raise ValueError(
                 'limit parameter to execute is not yet implemented in the '
                 'pandas backend'

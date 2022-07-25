@@ -4,13 +4,7 @@ from typing import TYPE_CHECKING, Iterable
 
 from public import public
 
-from ibis.expr.types.generic import (
-    AnyColumn,
-    AnyScalar,
-    AnyValue,
-    ColumnExpr,
-    literal,
-)
+from ibis.expr.types.generic import Column, Scalar, Value, literal
 from ibis.expr.types.typing import V
 
 if TYPE_CHECKING:
@@ -21,7 +15,7 @@ import ibis.common.exceptions as com
 
 
 @public
-class ArrayValue(AnyValue):
+class ArrayValue(Value):
     def length(self) -> ir.IntegerValue:
         """Compute the length of an array.
 
@@ -44,7 +38,7 @@ class ArrayValue(AnyValue):
     def __getitem__(
         self,
         index: int | ir.IntegerValue | slice,
-    ) -> ir.ValueExpr:
+    ) -> ir.Value:
         """Extract one or more elements of `self`.
 
         Parameters
@@ -54,7 +48,7 @@ class ArrayValue(AnyValue):
 
         Returns
         -------
-        ValueExpr
+        Value
             - If `index` is an [`int`][int] or
               [`IntegerValue`][ibis.expr.types.IntegerValue] then the return
               type is the element type of `self`.
@@ -190,14 +184,30 @@ class ArrayValue(AnyValue):
 
         return ops.ArrayRepeat(self, n).to_expr()
 
+    def unnest(self) -> ir.Value:
+        """Unnest an array.
+
+        Returns
+        -------
+        ir.Value
+            Unnested array
+        """
+        import ibis.expr.operations as ops
+
+        expr = ops.Unnest(self).to_expr()
+        try:
+            return expr.name(self.get_name())
+        except com.ExpressionError:
+            return expr
+
 
 @public
-class ArrayScalar(AnyScalar, ArrayValue):
+class ArrayScalar(Scalar, ArrayValue):
     pass
 
 
 @public
-class ArrayColumn(AnyColumn, ArrayValue):
+class ArrayColumn(Column, ArrayValue):
     pass
 
 
@@ -250,9 +260,9 @@ def array(
     """
     import ibis.expr.operations as ops
 
-    if all([isinstance(value, ColumnExpr) for value in values]):
+    if all([isinstance(value, Column) for value in values]):
         return ops.ArrayColumn(values).to_expr()
-    elif any([isinstance(value, ColumnExpr) for value in values]):
+    elif any([isinstance(value, Column) for value in values]):
         raise com.IbisTypeError(
             'To create an array column using `array`, all input values must '
             'be column expressions.'

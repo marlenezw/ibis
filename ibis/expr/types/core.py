@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import webbrowser
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Hashable, Mapping
 
-from cached_property import cached_property
 from public import public
 
 from ibis import config
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ibis.backends.base import BaseBackend
     from ibis.expr import operations as ops
     from ibis.expr import types as ir
-    from ibis.expr.types.generic import ValueExpr
+    from ibis.expr.types.generic import Value
 
 
 @public
@@ -129,7 +129,7 @@ class Expr:
         Notes
         -----
         This method opens a web browser tab showing the image of the expression
-        graph created by the code in [ibis.expr.visualize][].
+        graph created by the code in the `ibis.expr.visualize` module.
 
         Raises
         ------
@@ -241,7 +241,7 @@ class Expr:
         self,
         limit: int | str | None = 'default',
         timecontext: TimeContext | None = None,
-        params: Mapping[ValueExpr, Any] | None = None,
+        params: Mapping[Value, Any] | None = None,
         **kwargs: Any,
     ):
         """Execute an expression against its backend if one exists.
@@ -270,7 +270,7 @@ class Expr:
         self,
         limit: int | None = None,
         timecontext: TimeContext | None = None,
-        params: Mapping[ValueExpr, Any] | None = None,
+        params: Mapping[Value, Any] | None = None,
     ):
         """Compile to an execution target.
 
@@ -315,16 +315,14 @@ unnamed = UnnamedMarker()
 
 
 def _binop(
-    op_class: type[ops.BinaryOp],
-    left: ir.ValueExpr,
-    right: ir.ValueExpr,
-) -> ir.ValueExpr | NotImplemented:
+    op_class: type[ops.Binary], left: ir.Value, right: ir.Value
+) -> ir.Value | NotImplemented:
     """Try to construct a binary operation.
 
     Parameters
     ----------
     op_class
-        The [`BinaryOp`][ibis.expr.operations.BinaryOp] subclass for the
+        The [`Binary`][ibis.expr.operations.Binary] subclass for the
         operation
     left
         Left operand
@@ -333,7 +331,7 @@ def _binop(
 
     Returns
     -------
-    ValueExpr
+    Value
         A value expression
 
     Examples

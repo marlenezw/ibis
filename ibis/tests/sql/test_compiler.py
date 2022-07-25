@@ -131,7 +131,7 @@ def test_pushdown_with_or():
     expected = """\
 SELECT *
 FROM functional_alltypes
-WHERE ((`double_col` > 3.14) AND (locate('foo', `string_col`) - 1 >= 0)) AND
+WHERE ((`double_col` > 3.14) AND locate('foo', `string_col`) - 1 >= 0) AND
       (((`int_col` - 1) = 0) OR (`float_col` <= 1.34))"""
     assert result == expected
 
@@ -294,14 +294,14 @@ SELECT t0.*
 FROM (
   SELECT t2.`a`
   FROM (
-    SELECT `a`, `b`, '2018-01-01 00:00:00' AS `the_date`
+    SELECT `a`, `b`, '2018-01-01T00:00:00' AS `the_date`
     FROM (
       SELECT *
       FROM (
         SELECT `a`, `b`, `c` AS `C`
         FROM t
       ) t5
-      WHERE `C` = '2018-01-01 00:00:00'
+      WHERE `C` = '2018-01-01T00:00:00'
     ) t4
   ) t2
     INNER JOIN s t1

@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import functools
-from typing import Optional
+from typing import Iterable
 
 import sqlalchemy as sa
 from sqlalchemy.dialects import mysql, postgresql, sqlite
@@ -7,6 +9,7 @@ from sqlalchemy.dialects.mysql.base import MySQLDialect
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.dialects.sqlite.base import SQLiteDialect
 from sqlalchemy.engine.interfaces import Dialect
+from sqlalchemy.types import UserDefinedType
 
 import ibis.expr.datatypes as dt
 import ibis.expr.schema as sch
@@ -16,7 +19,21 @@ if geospatial_supported:
     import geoalchemy2 as ga
 
 
-def table_from_schema(name, meta, schema, database: Optional[str] = None):
+class StructType(UserDefinedType):
+    def __init__(
+        self,
+        pairs: Iterable[tuple[str, sa.types.TypeEngine]],
+    ):
+        self.pairs = [
+            (name, sa.types.to_instance(type)) for name, type in pairs
+        ]
+
+    def get_col_spec(self, **_):
+        pairs = ", ".join(f"{k} {v}" for k, v in self.pairs)
+        return f"STRUCT({pairs})"
+
+
+def table_from_schema(name, meta, schema, database: str | None = None):
     # Convert Ibis schema to SQLA table
     columns = []
 
@@ -45,6 +62,7 @@ ibis_type_to_sqla = {
     dt.Int16: sa.SmallInteger,
     dt.Int32: sa.Integer,
     dt.Int64: sa.BigInteger,
+    dt.JSON: sa.JSON,
 }
 
 
@@ -77,15 +95,18 @@ def _(itype, **kwargs):
 
 @to_sqla_type.register(dt.Array)
 def _(itype, **kwargs):
-    ibis_type = itype.value_type
-    if not isinstance(ibis_type, (dt.Primitive, dt.String)):
-        raise TypeError(f'Type {ibis_type} is not a primitive or string type')
-    return sa.ARRAY(to_sqla_type(ibis_type, **kwargs))
+    # Unwrap the array element type because sqlalchemy doesn't allow arrays of
+    # arrays. This doesn't affect the underlying data.
+    while isinstance(itype, dt.Array):
+        itype = itype.value_type
+    return sa.ARRAY(to_sqla_type(itype, **kwargs))
 
 
 @to_sqla_type.register(dt.Struct)
-def _(itype, **kwargs):
-    return sa.TupleType([to_sqla_type(type) for type in itype.types])
+def _(itype, **_):
+    return StructType(
+        [(name, to_sqla_type(type)) for name, type in itype.pairs.items()]
+    )
 
 
 @to_sqla_type.register(dt.GeoSpatial)
@@ -272,6 +293,12 @@ def sa_array(dialect, satype, nullable=True):
 
     value_dtype = dt.dtype(dialect, satype.item_type)
     return dt.Array(value_dtype, nullable=nullable)
+
+
+@dt.dtype.register(Dialect, StructType)
+def sa_struct(dialect, satype, nullable=True):
+    pairs = [(name, dt.dtype(dialect, typ)) for name, typ in satype.pairs]
+    return dt.Struct.from_tuples(pairs, nullable=nullable)
 
 
 @sch.infer.register((sa.Table, sa.sql.TableClause))

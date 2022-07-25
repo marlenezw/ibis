@@ -10,6 +10,7 @@ from ibis.backends.base.sql.alchemy import to_sqla_type, unary
 from ibis.backends.base.sql.alchemy.registry import (
     _geospatial_functions,
     _table_column,
+    reduction,
 )
 from ibis.backends.postgres.registry import fixed_arity, operation_registry
 
@@ -145,26 +146,85 @@ def _regex_extract(t, expr):
     return result
 
 
+def _strftime(t, expr):
+    op = expr.op()
+    format_str = op.format_str
+    if not isinstance(format_str_op := format_str.op(), ops.Literal):
+        raise TypeError(
+            "DuckDB format_str must be a literal `str`; "
+            f"got {type(format_str)}"
+        )
+    return sa.func.strftime(
+        t.translate(op.arg), sa.text(repr(format_str_op.value))
+    )
+
+
+def _arbitrary(t, expr):
+    if (how := expr.op().how) == "heavy":
+        raise ValueError(f"how={how!r} not supported in the DuckDB backend")
+    return t._reduction(getattr(sa.func, how), expr)
+
+
+def _string_agg(t, expr):
+    op = expr.op()
+    if not isinstance(lit := op.sep.op(), ops.Literal):
+        raise TypeError(
+            "Separator argument to group_concat operation must be a constant"
+        )
+    agg = sa.func.string_agg(t.translate(op.arg), sa.text(repr(lit.value)))
+    if (where := op.where) is not None:
+        return agg.filter(t.translate(where))
+    return agg
+
+
+def _struct_column(t, expr):
+    op = expr.op()
+    compile_kwargs = dict(literal_binds=True)
+    translated_pairs = (
+        (name, t.translate(value).compile(compile_kwargs=compile_kwargs))
+        for name, value in zip(op.names, op.values)
+    )
+    return sa.func.struct_pack(
+        *(sa.text(f"{name} := {value}") for name, value in translated_pairs)
+    )
+
+
 operation_registry.update(
     {
         ops.ArrayColumn: _array_column,
-        ops.ArrayConcat: fixed_arity('array_concat', 2),
+        ops.ArrayConcat: fixed_arity(sa.func.array_concat, 2),
         ops.DayOfWeekName: unary(sa.func.dayname),
         ops.Literal: _literal,
         ops.Log2: unary(sa.func.log2),
         ops.Ln: unary(sa.func.ln),
         ops.Log: _log,
+        ops.IsNan: unary(sa.func.isnan),
         # TODO: map operations, but DuckDB's maps are multimaps
         ops.Modulus: fixed_arity(operator.mod, 2),
         ops.Round: _round,
         ops.StructField: _struct_field,
         ops.TableColumn: _table_column,
-        ops.TimestampDiff: fixed_arity('age', 2),
+        ops.TimestampDiff: fixed_arity(sa.func.age, 2),
         ops.TimestampFromUNIX: _timestamp_from_unix,
-        ops.Translate: fixed_arity('replace', 3),
-        ops.TimestampNow: fixed_arity('now', 0),
+        ops.Translate: fixed_arity(sa.func.replace, 3),
+        ops.TimestampNow: fixed_arity(sa.func.now, 0),
         ops.RegexExtract: _regex_extract,
-        ops.RegexReplace: fixed_arity("regexp_replace", 3),
+        ops.RegexReplace: fixed_arity(sa.func.regexp_replace, 3),
+        ops.StringContains: fixed_arity(sa.func.contains, 2),
+        ops.CMSMedian: reduction(
+            lambda arg: sa.func.approx_quantile(arg, sa.text(str(0.5)))
+        ),
+        ops.ApproxMedian: reduction(
+            # without inline text, duckdb fails with
+            # RuntimeError: INTERNAL Error: Invalid PhysicalType for GetTypeIdSize # noqa: E501
+            lambda arg: sa.func.approx_quantile(arg, sa.text(str(0.5)))
+        ),
+        ops.HLLCardinality: reduction(sa.func.approx_count_distinct),
+        ops.ApproxCountDistinct: reduction(sa.func.approx_count_distinct),
+        ops.Strftime: _strftime,
+        ops.Arbitrary: _arbitrary,
+        ops.GroupConcat: _string_agg,
+        ops.StructColumn: _struct_column,
     }
 )
 

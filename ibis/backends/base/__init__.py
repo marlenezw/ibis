@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import abc
+import collections.abc
+import functools
+import keyword
 import re
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Mapping
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
-
-from cached_property import cached_property
 
 import ibis
 import ibis.common.exceptions as exc
@@ -15,10 +25,11 @@ import ibis.config
 import ibis.expr.operations as ops
 import ibis.expr.schema as sch
 import ibis.expr.types as ir
+from ibis.common.dispatch import RegexDispatcher
 from ibis.common.exceptions import TranslationError
 from ibis.util import deprecated
 
-__all__ = ('BaseBackend', 'Database')
+__all__ = ('BaseBackend', 'Database', 'connect')
 
 
 class Database:
@@ -70,8 +81,8 @@ class Database:
         """
         return self.list_tables()
 
-    def __getitem__(self, table: str) -> ir.TableExpr:
-        """Return a TableExpr for the given table name.
+    def __getitem__(self, table: str) -> ir.Table:
+        """Return a Table for the given table name.
 
         Parameters
         ----------
@@ -80,13 +91,13 @@ class Database:
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         return self.table(table)
 
-    def __getattr__(self, table: str) -> ir.TableExpr:
-        """Return a TableExpr for the given table name.
+    def __getattr__(self, table: str) -> ir.Table:
+        """Return a Table for the given table name.
 
         Parameters
         ----------
@@ -95,7 +106,7 @@ class Database:
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         return self.table(table)
@@ -117,7 +128,7 @@ class Database:
         """
         self.client.drop_database(self.name, force=force)
 
-    def table(self, name: str) -> ir.TableExpr:
+    def table(self, name: str) -> ir.Table:
         """Return a table expression referencing a table in this database.
 
         Parameters
@@ -127,7 +138,7 @@ class Database:
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         qualified_name = self._qualify(name)
@@ -142,6 +153,55 @@ class Database:
             A pattern to use for listing tables.
         """
         return self.client.list_tables(like, database=self.name)
+
+
+class TablesAccessor(collections.abc.Mapping):
+    """A mapping-like object for accessing tables off a backend.
+
+    Tables may be accessed by name using either index or attribute access:
+
+    Examples
+    --------
+    >>> con = ibis.sqlite.connect("example.db")
+    >>> people = con.tables['people']  # access via index
+    >>> people = con.tables.people  # access via attribute
+    """
+
+    def __init__(self, backend: BaseBackend):
+        self._backend = backend
+
+    def __getitem__(self, name) -> ir.Table:
+        try:
+            return self._backend.table(name)
+        except Exception as exc:
+            raise KeyError(name) from exc
+
+    def __getattr__(self, name) -> ir.Table:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self._backend.table(name)
+        except Exception as exc:
+            raise AttributeError(name) from exc
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(sorted(self._backend.list_tables()))
+
+    def __len__(self) -> int:
+        return len(self._backend.list_tables())
+
+    def __dir__(self) -> list[str]:
+        o = set()
+        o.update(dir(type(self)))
+        o.update(
+            name
+            for name in self._backend.list_tables()
+            if name.isidentifier() and not keyword.iskeyword(name)
+        )
+        return list(o)
+
+    def _ipython_key_completions_(self) -> list[str]:
+        return self._backend.list_tables()
 
 
 class BaseBackend(abc.ABC):
@@ -173,7 +233,7 @@ class BaseBackend(abc.ABC):
     def __eq__(self, other):
         return self.db_identity == other.db_identity
 
-    @cached_property
+    @functools.cached_property
     def db_identity(self) -> str:
         """Return the identity of the database.
 
@@ -364,8 +424,22 @@ class BaseBackend(abc.ABC):
         version='2.0',
         instead='change the current database before calling `.table()`',
     )
-    def table(self, name: str, database: str | None = None) -> ir.TableExpr:
+    def table(self, name: str, database: str | None = None) -> ir.Table:
         """Return a table expression from the database."""
+
+    @functools.cached_property
+    def tables(self):
+        """An accessor for tables in the database.
+
+        Tables may be accessed by name using either index or attribute access:
+
+        Examples
+        --------
+        >>> con = ibis.sqlite.connect("example.db")
+        >>> people = con.tables['people']  # access via index
+        >>> people = con.tables.people  # access via attribute
+        """
+        return TablesAccessor(self)
 
     @deprecated(version='2.0', instead='use `.table(name).schema()`')
     def get_schema(self, table_name: str, database: str = None) -> sch.Schema:
@@ -478,7 +552,7 @@ class BaseBackend(abc.ABC):
     def create_table(
         self,
         name: str,
-        obj: pd.DataFrame | ir.TableExpr | None = None,
+        obj: pd.DataFrame | ir.Table | None = None,
         schema: ibis.Schema | None = None,
         database: str | None = None,
     ) -> None:
@@ -529,7 +603,7 @@ class BaseBackend(abc.ABC):
     def create_view(
         self,
         name: str,
-        expr: ir.TableExpr,
+        expr: ir.Table,
         database: str | None = None,
     ) -> None:
         """Create a view.
@@ -568,7 +642,7 @@ class BaseBackend(abc.ABC):
         )
 
     @classmethod
-    def has_operation(cls, operation: type[ops.ValueOp]) -> bool:
+    def has_operation(cls, operation: type[ops.Value]) -> bool:
         """Return whether the backend implements support for `operation`.
 
         Parameters
@@ -593,3 +667,114 @@ class BaseBackend(abc.ABC):
         raise NotImplementedError(
             f"{cls.name} backend has not implemented `has_operation` API"
         )
+
+
+_connect = RegexDispatcher("_connect")
+
+
+@_connect.register(r"(?P<backend>.+)://(?P<path>.*)", priority=10)
+def _(_: str, *, backend: str, path: str, **kwargs: Any) -> BaseBackend:
+    """Connect to given `backend` with `path`.
+
+    Examples
+    --------
+    >>> con = ibis.connect("duckdb://relative/path/to/data.db")
+    >>> con = ibis.connect("postgres://user:pass@hostname:port/database")
+    """
+    instance = getattr(ibis, backend)
+    backend += (backend == "postgres") * "ql"
+    try:
+        return instance.connect(url=f"{backend}://{path}", **kwargs)
+    except TypeError:
+        return instance.connect(path, **kwargs)
+
+
+@_connect.register(r"file://(?P<path>.*)", priority=10)
+def _(_: str, *, path: str, **kwargs: Any) -> BaseBackend:
+    """Connect to file located at `path`."""
+    return _connect(path, **kwargs)
+
+
+@_connect.register(r".+\.(?P<backend>.+)", priority=1)
+def _(path: str, *, backend: str, **kwargs: Any) -> BaseBackend:
+    """Connect to given path.
+
+    The extension is assumed to be the name of an ibis backend.
+
+    Examples
+    --------
+    >>> con = ibis.connect("file://relative/path/to/data.duckdb")
+    """
+    return getattr(ibis, backend).connect(path, **kwargs)
+
+
+@functools.singledispatch
+def connect(resource: Path | str, **_: Any) -> BaseBackend:
+    """Connect to `resource`.
+
+    `resource` can be a `pathlib.Path` or a `str` specifying a URL or path.
+
+    Examples
+    --------
+    >>> con = ibis.connect("duckdb://relative/path/to/data.db")
+    >>> con = ibis.connect("relative/path/to/data.duckdb")
+    """
+    raise NotImplementedError(type(resource))
+
+
+@connect.register
+def _(path: Path, **kwargs: Any) -> BaseBackend:
+    return _connect(str(path), **kwargs)
+
+
+@connect.register
+def _(url: str, **kwargs: Any) -> BaseBackend:
+    return _connect(url, **kwargs)
+
+
+@_connect.register(
+    r"(?P<backend>.+)://(?P<filename>.+\.(?P<extension>.+))",
+    priority=11,
+)
+def _(
+    _: str,
+    *,
+    backend: str,
+    filename: str,
+    extension: str,
+    **kwargs: Any,
+) -> BaseBackend:
+    """Connect to `backend` and register a file.
+
+    The extension of the file will be used to register the file with
+    the backend.
+
+    Examples
+    --------
+    >>> con = ibis.connect("duckdb://relative/path/to/data.csv")
+    >>> con = ibis.connect("duckdb://relative/path/to/more/data.parquet")
+    """
+    con = getattr(ibis, backend).connect(**kwargs)
+    con.register(f"{extension}://{filename}")
+    return con
+
+
+@_connect.register(
+    r"(?P<filename>.+\.(?P<extension>parquet|csv))",
+    priority=8,
+)
+def _(
+    _: str,
+    *,
+    filename: str,
+    extension: str,
+    **kwargs: Any,
+) -> BaseBackend:
+    """Connect to `duckdb` and register a parquet or csv file.
+
+    Examples
+    --------
+    >>> con = ibis.connect("relative/path/to/data.csv")
+    >>> con = ibis.connect("relative/path/to/more/data.parquet")
+    """
+    return _connect(f"duckdb://{filename}", **kwargs)

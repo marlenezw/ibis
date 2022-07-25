@@ -251,9 +251,9 @@ def test_where_analyze_scalar_op(functional_alltypes):
     expected = """\
 SELECT count(*) AS `count`
 FROM functional_alltypes
-WHERE (`timestamp_col` < date_add(cast({} as timestamp), INTERVAL 3 MONTH)) AND
+WHERE (`timestamp_col` < date_add(cast({!r} as timestamp), INTERVAL 3 MONTH)) AND
       (`timestamp_col` < date_add(cast(now() as timestamp), INTERVAL 10 DAY))"""  # noqa: E501
-    assert result == expected.format("'2010-01-01 00:00:00'")
+    assert result == expected.format("2010-01-01T00:00:00")
 
 
 def test_bug_duplicated_where(airlines):
@@ -423,7 +423,23 @@ def test_projection_filter_fuse(projection_fuse_filter):
     sql3 = Compiler.to_sql(expr3)
 
     assert sql1 == sql2
-    assert sql1 == sql3
+
+    # ideally sql1 == sql3 but the projection logic has been a mess for a long
+    # time and causes bugs like
+    #
+    # https://github.com/ibis-project/ibis/issues/4003
+    #
+    # so we're conservative in fusing projections and filters
+    #
+    # even though it may seem obvious what to do, it's not
+    expected_sql3 = """\
+SELECT `a`, `b`, `c`
+FROM (
+  SELECT *
+  FROM foo
+  WHERE `a` > 0
+) t0"""
+    assert sql3 == expected_sql3
 
 
 def test_bug_project_multiple_times(customer, nation, region):
@@ -783,23 +799,25 @@ def test_filter_subquery_derived_reduction(filter_subquery_derived_reduction):
     expr3, expr4 = filter_subquery_derived_reduction
 
     result = Compiler.to_sql(expr3)
-    expected = """SELECT *
+    expected = """\
+SELECT *
 FROM star1
-WHERE `f` > (
-  SELECT ln(avg(`f`)) AS `tmp`
+WHERE `f` > ln((
+  SELECT avg(`f`) AS `mean`
   FROM star1
   WHERE `foo_id` = 'foo'
-)"""
+))"""
     assert result == expected
 
     result = Compiler.to_sql(expr4)
-    expected = """SELECT *
+    expected = """\
+SELECT *
 FROM star1
-WHERE `f` > (
-  SELECT ln(avg(`f`)) + 1 AS `tmp`
+WHERE `f` > (ln((
+  SELECT avg(`f`) AS `mean`
   FROM star1
   WHERE `foo_id` = 'foo'
-)"""
+)) + 1)"""
     assert result == expected
 
 
@@ -893,20 +911,26 @@ def test_topk_analysis_bug():
 
     result = Compiler.to_sql(expr)
     expected = f"""\
-SELECT t0.`origin`, count(*) AS `count`
-FROM airlines t0
-  LEFT SEMI JOIN (
+SELECT `origin`, count(*) AS `count`
+FROM (
+  SELECT t1.*
+  FROM (
     SELECT *
-    FROM (
-      SELECT `dest`, avg(`arrdelay`) AS `mean`
-      FROM airlines
-      GROUP BY 1
-    ) t2
-    ORDER BY `mean` DESC
-    LIMIT 10
+    FROM airlines
+    WHERE `dest` IN {dests_formatted}
   ) t1
-    ON t0.`dest` = t1.`dest`
-WHERE t0.`dest` IN {dests_formatted}
+    LEFT SEMI JOIN (
+      SELECT *
+      FROM (
+        SELECT `dest`, avg(`arrdelay`) AS `mean`
+        FROM airlines
+        GROUP BY 1
+      ) t3
+      ORDER BY `mean` DESC
+      LIMIT 10
+    ) t2
+      ON `dest` = t2.`dest`
+) t0
 GROUP BY 1"""
 
     assert result == expected
@@ -922,6 +946,26 @@ def test_topk_to_aggregate():
 
     result = Compiler.to_sql(top)
     expected = Compiler.to_sql(top.to_aggregation())
+    assert result == expected
+
+
+def test_bool_bool():
+    import ibis
+    from ibis.backends.base.sql.compiler import Compiler
+
+    t = ibis.table(
+        [('dest', 'string'), ('origin', 'string'), ('arrdelay', 'int32')],
+        'airlines',
+    )
+
+    x = ibis.literal(True)
+    top = t[(t.dest.cast('int64') == 0) == x]
+
+    result = Compiler.to_sql(top)
+    expected = """\
+SELECT *
+FROM airlines
+WHERE (CAST(`dest` AS bigint) = 0) = TRUE"""
     assert result == expected
 
 
@@ -1426,4 +1470,34 @@ def test_endswith(endswith):
     expected = """\
 SELECT `foo_id` like concat('%', 'foo') AS `tmp`
 FROM star1"""
+    assert Compiler.to_sql(expr) == expected
+
+
+def test_filter_predicates():
+    table = ibis.table([("color", "string")], name="t")
+    predicates = [
+        lambda x: x.color.lower().like('%de%'),
+        lambda x: x.color.lower().contains('de'),
+        lambda x: x.color.lower().rlike('.*ge.*'),
+    ]
+
+    expr = table
+    for pred in predicates:
+        filtered = expr.filter(pred(expr))
+        projected = filtered.projection([expr])
+        expr = projected
+
+    expected = """\
+SELECT t0.*
+FROM (
+  SELECT *
+  FROM (
+    SELECT *
+    FROM t
+    WHERE (lower(`color`) LIKE '%de%') AND
+          (locate('de', lower(`color`)) - 1 >= 0)
+  ) t2
+) t0
+WHERE regexp_like(lower(t0.`color`), '.*ge.*')"""
+
     assert Compiler.to_sql(expr) == expected

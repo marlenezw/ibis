@@ -1,5 +1,7 @@
+import datetime
 import operator
 import warnings
+from operator import methodcaller
 
 import numpy as np
 import pandas as pd
@@ -8,6 +10,7 @@ import pytest
 from pytest import param
 
 import ibis
+import ibis.common.exceptions as com
 import ibis.expr.datatypes as dt
 from ibis.backends.pandas.execution.temporal import day_name
 
@@ -56,6 +59,41 @@ def test_timestamp_extract(backend, alltypes, df, attr):
         getattr(df.timestamp_col.dt, attr.replace('_', '')).astype('int32')
     ).rename(attr)
     backend.assert_series_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    ('func', 'expected'),
+    [
+        param(methodcaller('year'), 2015, id='year'),
+        param(methodcaller('month'), 9, id='month'),
+        param(methodcaller('day'), 1, id='day'),
+        param(methodcaller('hour'), 14, id='hour'),
+        param(methodcaller('minute'), 48, id='minute'),
+        param(methodcaller('second'), 5, id='second'),
+        param(
+            methodcaller('millisecond'),
+            359,
+            id='millisecond',
+            marks=[
+                pytest.mark.notimpl(["clickhouse", "pyspark"]),
+                pytest.mark.broken(
+                    ["mysql"],
+                    reason="MySQL implementation of milliseconds is broken",
+                ),
+            ],
+        ),
+        param(lambda x: x.day_of_week.index(), 1, id='day_of_week_index'),
+        param(
+            lambda x: x.day_of_week.full_name(),
+            'Tuesday',
+            id='day_of_week_full_name',
+        ),
+    ],
+)
+@pytest.mark.notimpl(["datafusion"])
+def test_timestamp_extract_literal(con, func, expected):
+    value = ibis.timestamp('2015-09-01 14:48:05.359')
+    assert con.execute(func(value)) == expected
 
 
 @pytest.mark.notimpl(["datafusion", "clickhouse"])
@@ -467,15 +505,40 @@ def test_interval_add_cast_column(backend, alltypes, df):
 
 
 @pytest.mark.parametrize(
-    ('ibis_pattern', 'pandas_pattern'), [('%Y%m%d', '%Y%m%d')]
+    ('expr_fn', 'pandas_pattern'),
+    [
+        param(
+            lambda t: t.timestamp_col.strftime('%Y%m%d').name("formatted"),
+            '%Y%m%d',
+            id="literal_format_str",
+        ),
+        param(
+            lambda t: (
+                t.mutate(suffix="%d")
+                .select(
+                    [
+                        lambda t: t.timestamp_col.strftime(
+                            "%Y%m" + t.suffix
+                        ).name("formatted")
+                    ]
+                )
+                .formatted
+            ),
+            '%Y%m%d',
+            marks=[
+                pytest.mark.notimpl(["dask", "pandas", "postgres", "pyspark"]),
+                pytest.mark.notyet(["duckdb"]),
+            ],
+            id="column_format_str",
+        ),
+    ],
 )
-@pytest.mark.notimpl(["clickhouse", "datafusion", "duckdb", "impala"])
-def test_strftime(backend, con, alltypes, df, ibis_pattern, pandas_pattern):
-    expr = alltypes.timestamp_col.strftime(ibis_pattern)
-    expected = df.timestamp_col.dt.strftime(pandas_pattern)
+@pytest.mark.notimpl(["datafusion", "impala"])
+def test_strftime(backend, alltypes, df, expr_fn, pandas_pattern):
+    expr = expr_fn(alltypes)
+    expected = df.timestamp_col.dt.strftime(pandas_pattern).rename("formatted")
 
     result = expr.execute()
-    expected = backend.default_series_rename(expected)
     backend.assert_series_equal(result, expected)
 
 
@@ -501,7 +564,7 @@ unit_factors = {'s': int(1e9), 'ms': int(1e6), 'us': int(1e3), 'ns': 1}
     ],
 )
 @pytest.mark.notimpl(["datafusion", "mysql", "postgres", "sqlite"])
-def test_to_timestamp(backend, con, unit):
+def test_integer_to_timestamp(backend, con, unit):
     backend_unit = backend.returned_timestamp_unit
     factor = unit_factors[unit]
 
@@ -515,6 +578,75 @@ def test_to_timestamp(backend, con, unit):
     expected = pd.Timestamp(pandas_ts, unit='ns').floor(backend_unit)
 
     assert result == expected
+
+
+@pytest.mark.parametrize(
+    'fmt, timezone',
+    [
+        # "11/01/10" - "month/day/year"
+        param(
+            '%m/%d/%y',
+            "UTC",
+            id="mysql_format",
+            marks=pytest.mark.never(
+                ["pyspark"], reason="datetime formatting style not supported"
+            ),
+        ),
+        param(
+            'MM/dd/yy',
+            "UTC",
+            id="pyspark_format",
+            marks=pytest.mark.never(
+                ["mysql"], reason="datetime formatting style not supported"
+            ),
+        ),
+    ],
+)
+@pytest.mark.notimpl(
+    [
+        'dask',
+        'pandas',
+        'postgres',
+        'duckdb',
+        'clickhouse',
+        'sqlite',
+        'impala',
+        'datafusion',
+    ]
+)
+def test_string_to_timestamp(backend, con, fmt, timezone):
+    table = con.table('functional_alltypes')
+    result = table.mutate(
+        date=table.date_string_col.to_timestamp(fmt, timezone)
+    ).execute()
+
+    # TEST: do we get the same date out, that we put in?
+    # format string assumes that we are using pandas' strftime
+    for i, val in enumerate(result["date"]):
+        assert val.strftime("%m/%d/%y") == result["date_string_col"][i]
+
+
+@pytest.mark.notimpl(
+    [
+        'dask',
+        'pandas',
+        'postgres',
+        'duckdb',
+        'clickhouse',
+        'sqlite',
+        'impala',
+        'datafusion',
+    ]
+)
+def test_string_to_timestamp_tz_error(backend, con):
+    table = con.table('functional_alltypes')
+
+    with pytest.raises(com.UnsupportedArgumentError):
+        table.mutate(
+            date=table.date_string_col.to_timestamp(
+                "%m/%d/%y", 'non-utc-timezone'
+            )
+        ).compile()
 
 
 @pytest.mark.parametrize(
@@ -693,3 +825,48 @@ def test_date_column_from_iso(con, alltypes, df):
     )
     actual = result.dt.strftime('%Y-%m-%d')
     tm.assert_series_equal(golden.rename('tmp'), actual.rename('tmp'))
+
+
+@pytest.mark.notimpl(["datafusion"])
+@pytest.mark.notyet(["clickhouse", "pyspark"])
+@pytest.mark.broken(["mysql"])
+def test_timestamp_extract_milliseconds_with_big_value(con):
+    timestamp = ibis.timestamp("2021-01-01 01:30:59.333")
+    millis = timestamp.millisecond()
+    result = con.execute(millis)
+    assert result == 333
+
+
+@pytest.mark.notimpl(["datafusion"])
+@pytest.mark.broken(
+    ["dask", "pandas"],
+    reason="Pandas and Dask interpret integers as nanoseconds since epoch",
+)
+def test_integer_cast_to_timestamp(backend, alltypes, df):
+    expr = alltypes.int_col.cast("timestamp")
+    expected = pd.to_datetime(df.int_col, unit="s").rename(expr.get_name())
+    result = expr.execute()
+    backend.assert_series_equal(result, expected)
+
+
+@pytest.mark.broken(
+    ["clickhouse", "impala"],
+    reason=(
+        "Impala returns a string; "
+        "the clickhouse driver returns invalid results for big timestamps"
+    ),
+)
+@pytest.mark.notimpl(
+    ["datafusion", "duckdb"],
+    reason="DataFusion and DuckDB backends assume ns resolution timestamps",
+)
+@pytest.mark.notyet(
+    ["pyspark"],
+    reason="PySpark doesn't handle big timestamps",
+)
+def test_big_timestamp(con):
+    # TODO: test with a timezone
+    value = ibis.timestamp("2419-10-11 10:10:25")
+    result = con.execute(value)
+    expected = datetime.datetime(2419, 10, 11, 10, 10, 25)
+    assert result == expected

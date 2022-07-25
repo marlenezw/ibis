@@ -61,6 +61,7 @@ from ibis.backends.pandas.execution.generic import (
     execute_series_notnnull,
     execute_sort_key_series_bool,
     execute_table_column_df_or_df_groupby,
+    execute_zero_if_null_series,
 )
 
 # Many dask and pandas functions are functionally equivalent, so we just add
@@ -125,13 +126,19 @@ DASK_DISPATCH_TYPES: TypeRegistrationDict = {
     ],
     ops.Contains: [
         (
-            (dd.Series, (collections.abc.Sequence, collections.abc.Set)),
+            (
+                dd.Series,
+                (collections.abc.Sequence, collections.abc.Set, dd.Series),
+            ),
             execute_node_contains_series_sequence,
         )
     ],
     ops.NotContains: [
         (
-            (dd.Series, (collections.abc.Sequence, collections.abc.Set)),
+            (
+                dd.Series,
+                (collections.abc.Sequence, collections.abc.Set, dd.Series),
+            ),
             execute_node_not_contains_series_sequence,
         )
     ],
@@ -144,6 +151,13 @@ DASK_DISPATCH_TYPES: TypeRegistrationDict = {
         ((dd.Series, simple_types), execute_node_nullif_series_scalar),
     ],
     ops.Distinct: [((dd.DataFrame,), execute_distinct_dataframe)],
+    ops.ZeroIfNull: [
+        ((dd.Series,), execute_zero_if_null_series),
+        (
+            (type(None), type(pd.NA), np.floating, float),
+            execute_zero_if_null_series,
+        ),
+    ],
 }
 
 register_types_to_dispatcher(execute_node, DASK_DISPATCH_TYPES)
@@ -279,16 +293,16 @@ def execute_not_scalar_or_series(op, data, **kwargs):
     return ~data
 
 
-@execute_node.register(ops.BinaryOp, dd.Series, dd.Series)
-@execute_node.register(ops.BinaryOp, dd.Series, dd.core.Scalar)
-@execute_node.register(ops.BinaryOp, dd.core.Scalar, dd.Series)
+@execute_node.register(ops.Binary, dd.Series, dd.Series)
+@execute_node.register(ops.Binary, dd.Series, dd.core.Scalar)
+@execute_node.register(ops.Binary, dd.core.Scalar, dd.Series)
 @execute_node.register(
-    (ops.NumericBinaryOp, ops.LogicalBinaryOp, ops.Comparison),
+    (ops.NumericBinary, ops.LogicalBinary, ops.Comparison),
     numeric_types,
     dd.Series,
 )
 @execute_node.register(
-    (ops.NumericBinaryOp, ops.LogicalBinaryOp, ops.Comparison),
+    (ops.NumericBinary, ops.LogicalBinary, ops.Comparison),
     dd.Series,
     numeric_types,
 )
@@ -308,7 +322,7 @@ def execute_binary_op(op, left, right, **kwargs):
         return operation(left, right)
 
 
-@execute_node.register(ops.BinaryOp, ddgb.SeriesGroupBy, ddgb.SeriesGroupBy)
+@execute_node.register(ops.Binary, ddgb.SeriesGroupBy, ddgb.SeriesGroupBy)
 def execute_binary_op_series_group_by(op, left, right, **kwargs):
     if left.index != right.index:
         raise ValueError(
@@ -321,19 +335,19 @@ def execute_binary_op_series_group_by(op, left, right, **kwargs):
     return result.groupby(left.index)
 
 
-@execute_node.register(ops.BinaryOp, ddgb.SeriesGroupBy, simple_types)
+@execute_node.register(ops.Binary, ddgb.SeriesGroupBy, simple_types)
 def execute_binary_op_series_gb_simple(op, left, right, **kwargs):
     result = execute_binary_op(op, make_selected_obj(left), right, **kwargs)
     return result.groupby(left.index)
 
 
-@execute_node.register(ops.BinaryOp, simple_types, ddgb.SeriesGroupBy)
+@execute_node.register(ops.Binary, simple_types, ddgb.SeriesGroupBy)
 def execute_binary_op_simple_series_gb(op, left, right, **kwargs):
     result = execute_binary_op(op, left, make_selected_obj(right), **kwargs)
     return result.groupby(right.index)
 
 
-@execute_node.register(ops.UnaryOp, ddgb.SeriesGroupBy)
+@execute_node.register(ops.Unary, ddgb.SeriesGroupBy)
 def execute_unary_op_series_gb(op, operand, **kwargs):
     result = execute_node(op, make_selected_obj(operand), **kwargs)
     return result.groupby(operand.index)
@@ -385,14 +399,14 @@ def execute_node_nullif_scalar_series(op, value, series, **kwargs):
     return dd.from_array(da.where(series.eq(value).values, np.nan, value))
 
 
-def wrap_case_result(raw: np.ndarray, expr: ir.ValueExpr):
+def wrap_case_result(raw: np.ndarray, expr: ir.Value):
     """Wrap a CASE statement result in a Series and handle returning scalars.
 
     Parameters
     ----------
     raw : ndarray[T]
         The raw results of executing the ``CASE`` expression
-    expr : ValueExpr
+    expr : Value
         The expression from the which `raw` was computed
 
     Returns
@@ -407,7 +421,7 @@ def wrap_case_result(raw: np.ndarray, expr: ir.ValueExpr):
             raw_1d.astype(constants.IBIS_TYPE_TO_PANDAS_TYPE[expr.type()])
         )
     # TODO - we force computation here
-    if isinstance(expr, ir.ScalarExpr) and result.size.compute() == 1:
+    if isinstance(expr, ir.Scalar) and result.size.compute() == 1:
         return result.head().item()
     return result
 

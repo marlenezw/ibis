@@ -2,27 +2,20 @@
 let
   pkgs = import ./nix;
 
+  pythonEnv = pkgs."ibisDevEnv${pythonShortVersion}";
+
   devDeps = with pkgs; [
-    cacert
-    cachix
-    commitlint
-    curl
-    duckdb
-    git
+    # terminal markdown rendering
     glow
+    # used in the justfile
     jq
-    just
-    lychee
-    mariadb
-    niv
-    nix-linter
-    nixpkgs-fmt
-    poetry
-    prettierTOML
-    shellcheck
-    shfmt
-    unzip
     yj
+    # linting
+    commitlint
+    lychee
+    # packaging
+    niv
+    pythonEnv.pkgs.poetry
   ];
 
   impalaUdfDeps = with pkgs; [
@@ -30,50 +23,35 @@ let
     cmake
     ninja
   ];
-
-  backendTestDeps = [ pkgs.docker-compose_2 ];
+  backendTestDeps = [ pkgs.docker-compose ];
   vizDeps = [ pkgs.graphviz-nox ];
+  duckdbDeps = [ pkgs.duckdb ];
+  mysqlDeps = [ pkgs.mariadb-client ];
   pysparkDeps = [ pkgs.openjdk11_headless ];
-  docDeps = [ pkgs.pandoc ];
 
-  # postgresql is the client, not the server
-  postgresDeps = [ pkgs.postgresql ];
+  postgresDeps = [ pkgs.postgresql ]; # postgres client dependencies
   geospatialDeps = with pkgs; [ gdal_2 proj ];
-
   sqliteDeps = [ pkgs.sqlite-interactive ];
 
   libraryDevDeps = impalaUdfDeps
     ++ backendTestDeps
     ++ vizDeps
     ++ pysparkDeps
-    ++ docDeps
     ++ geospatialDeps
     ++ postgresDeps
-    ++ sqliteDeps;
+    ++ sqliteDeps
+    ++ duckdbDeps
+    ++ mysqlDeps;
 
   pythonShortVersion = builtins.replaceStrings [ "." ] [ "" ] python;
-  pythonEnv = pkgs."ibisDevEnv${pythonShortVersion}";
-  changelog = pkgs.writeShellApplication {
-    name = "changelog";
-    runtimeInputs = [ pkgs.nodePackages.conventional-changelog-cli ];
-    text = ''
-      conventional-changelog --preset conventionalcommits
-    '';
-  };
-  mic = pkgs.writeShellApplication {
-    name = "mic";
-    runtimeInputs = [ pythonEnv pkgs.coreutils ];
-    text = ''
-      # The immediate reason this is necessary is to allow the subprocess
-      # invocations of `mkdocs` by `mike` to see Python dependencies.
-      #
-      # This shouldn't be necessary, but I think the nix wrappers may be
-      # indavertently preventing this.
-      export PYTHONPATH TEMPDIR
-      PYTHONPATH="$(python -c 'import os, sys; print(os.pathsep.join(sys.path))')"
-      TEMPDIR="$(mktemp -d)"
 
-      mike "$@"
+  updateLockFiles = pkgs.writeShellApplication {
+    name = "update-lock-files";
+    runtimeInputs = [ pythonEnv.pkgs.poetry ];
+    text = ''
+      poetry lock --no-update
+      poetry export --dev --without-hashes --no-ansi --extras all > requirements.txt
+      ./dev/poetry2setup -o setup.py
     '';
   };
 in
@@ -81,21 +59,27 @@ pkgs.mkShell {
   name = "ibis${pythonShortVersion}";
 
   shellHook = ''
-    data_dir="$PWD/ci/ibis-testing-data"
-    mkdir -p "$data_dir"
-    chmod u+rwx "$data_dir"
-    cp -rf ${pkgs.ibisTestingData}/* "$data_dir"
-    chmod --recursive u+rw "$data_dir"
+    export IBIS_TEST_DATA_DIRECTORY="$PWD/ci/ibis-testing-data"
 
-    export IBIS_TEST_DATA_DIRECTORY="$data_dir"
+    rsync \
+      --chmod=Du+rwx,Fu+rw --archive --delete \
+      "${pkgs.ibisTestingData}/" \
+      "$IBIS_TEST_DATA_DIRECTORY"
+
+    export TEMPDIR
+    TEMPDIR="$(python -c 'import tempfile; print(tempfile.gettempdir())')"
   '';
 
   buildInputs = devDeps ++ libraryDevDeps ++ [
+    pythonEnv
+    updateLockFiles
+  ] ++ pkgs.preCommitShell.buildInputs ++ (with pkgs; [
     changelog
     mic
-    pythonEnv
-    (pythonEnv.python.pkgs.toPythonApplication pkgs.pre-commit)
-  ];
+    rsync
+  ]);
 
   PYTHONPATH = builtins.toPath ./.;
+  PGPASSWORD = "postgres";
+  MYSQL_PWD = "ibis";
 }

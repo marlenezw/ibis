@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import functools
 import inspect
 import math
+import operator
+from typing import Callable
 
 import regex as re
 
@@ -220,6 +224,73 @@ def _ibis_sqlite_sqrt(arg):
     return None if arg is None or arg < 0.0 else math.sqrt(arg)
 
 
+def _trig_func_unary(func, arg):
+    if arg is None:
+        return None
+
+    return func(float(arg))
+
+
+def _trig_func_binary(func, arg1, arg2):
+    if arg1 is None or arg2 is None:
+        return None
+
+    return func(float(arg1), float(arg2))
+
+
+@udf
+def _ibis_sqlite_cot(arg):
+    return _trig_func_unary(
+        lambda arg: float("inf") if not arg else math.cos(arg) / math.sin(arg),
+        arg,
+    )
+
+
+@udf
+def _ibis_sqlite_sin(arg):
+    return _trig_func_unary(math.sin, arg)
+
+
+@udf
+def _ibis_sqlite_cos(arg):
+    return _trig_func_unary(math.cos, arg)
+
+
+@udf
+def _ibis_sqlite_tan(arg):
+    return _trig_func_unary(math.tan, arg)
+
+
+@udf
+def _ibis_sqlite_asin(arg):
+    return _trig_func_unary(math.asin, arg)
+
+
+@udf
+def _ibis_sqlite_acos(arg):
+    return _trig_func_unary(math.acos, arg)
+
+
+@udf
+def _ibis_sqlite_atan(arg):
+    return _trig_func_unary(math.atan, arg)
+
+
+@udf
+def _ibis_sqlite_atan2(y, x):
+    return _trig_func_binary(math.atan2, y, x)
+
+
+@udf
+def _ibis_sqlite_degrees(x):
+    return None if x is None else math.degrees(x)
+
+
+@udf
+def _ibis_sqlite_radians(x):
+    return None if x is None else math.radians(x)
+
+
 class _ibis_sqlite_var:
     def __init__(self, offset):
         self.mean = 0.0
@@ -251,6 +322,42 @@ class _ibis_sqlite_var_pop(_ibis_sqlite_var):
 class _ibis_sqlite_var_samp(_ibis_sqlite_var):
     def __init__(self):
         super().__init__(1)
+
+
+class _ibis_sqlite_bit_agg:
+    def __init__(self, op):
+        self.value: int | None = None
+        self.count: int = 0
+        self.op: Callable[[int, int], int] = op
+
+    def step(self, value):
+        if value is not None:
+            if not self.count:
+                self.value = value
+            else:
+                self.value = self.op(self.value, value)
+            self.count += 1
+
+    def finalize(self) -> int | None:
+        return self.value
+
+
+@udaf
+class _ibis_sqlite_bit_or(_ibis_sqlite_bit_agg):
+    def __init__(self):
+        super().__init__(operator.or_)
+
+
+@udaf
+class _ibis_sqlite_bit_and(_ibis_sqlite_bit_agg):
+    def __init__(self):
+        super().__init__(operator.and_)
+
+
+@udaf
+class _ibis_sqlite_bit_xor(_ibis_sqlite_bit_agg):
+    def __init__(self):
+        super().__init__(operator.xor)
 
 
 def _number_of_arguments(callable):

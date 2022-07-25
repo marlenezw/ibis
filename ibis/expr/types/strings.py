@@ -11,11 +11,11 @@ from public import public
 
 from ibis import util
 from ibis.expr.types.core import _binop
-from ibis.expr.types.generic import AnyColumn, AnyScalar, AnyValue
+from ibis.expr.types.generic import Column, Scalar, Value
 
 
 @public
-class StringValue(AnyValue):
+class StringValue(Value):
     def __getitem__(self, key: slice | int | ir.IntegerValue) -> StringValue:
         from ibis.expr import types as ir
 
@@ -180,7 +180,9 @@ class StringValue(AnyValue):
         BooleanValue
             Boolean indicating the presence of `substr` in the expression
         """
-        return self.find(substr) >= 0
+        import ibis.expr.operations as ops
+
+        return ops.StringContains(self, substr).to_expr()
 
     def hashbytes(
         self,
@@ -839,10 +841,10 @@ class StringValue(AnyValue):
 
 
 @public
-class StringScalar(AnyScalar, StringValue):
+class StringScalar(Scalar, StringValue):
     pass
 
 
 @public
-class StringColumn(AnyColumn, StringValue):
+class StringColumn(Column, StringValue):
     pass

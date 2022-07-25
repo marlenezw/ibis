@@ -2,91 +2,12 @@ import toolz
 
 import ibis.common.exceptions as com
 import ibis.expr.analysis as L
-import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.types as ir
 import ibis.util as util
-from ibis.backends.base.sql.compiler.extract_subqueries import (
-    ExtractSubqueries,
+from ibis.backends.base.sql.compiler.base import (
+    _extract_common_table_expressions,
 )
-
-
-class _AnyToExistsTransform:
-
-    """
-    Some code duplication with the correlated ref check; should investigate
-    better code reuse.
-    """
-
-    def __init__(self, context, expr, parent_table):
-        self.context = context
-        self.expr = expr
-        self.parent_table = parent_table
-        self.query_roots = frozenset(self.parent_table.op().root_tables())
-
-    def get_result(self):
-        self.foreign_table = None
-        self.predicates = []
-
-        self._visit(self.expr)
-
-        if type(self.expr.op()) == ops.Any:
-            op = ops.ExistsSubquery(self.foreign_table, self.predicates)
-        else:
-            op = ops.NotExistsSubquery(self.foreign_table, self.predicates)
-
-        expr_type = dt.boolean.column
-        return expr_type(op)
-
-    def _visit(self, expr):
-        node = expr.op()
-
-        for arg in node.flat_args():
-            if isinstance(arg, ir.TableExpr):
-                self._visit_table(arg)
-            elif isinstance(arg, ir.BooleanColumn):
-                for sub_expr in L.flatten_predicate(arg):
-                    self.predicates.append(sub_expr)
-                    self._visit(sub_expr)
-            elif isinstance(arg, ir.Expr):
-                self._visit(arg)
-            else:
-                continue
-
-    def _find_blocking_table(self, expr):
-        node = expr.op()
-
-        if node.blocks():
-            return expr
-
-        for arg in node.flat_args():
-            if isinstance(arg, ir.Expr):
-                result = self._find_blocking_table(arg)
-                if result is not None:
-                    return result
-
-    def _visit_table(self, expr):
-        node = expr.op()
-
-        if isinstance(expr, ir.TableExpr):
-            base_table = self._find_blocking_table(expr)
-            if base_table is not None:
-                base_node = base_table.op()
-                if self._is_root(base_node):
-                    pass
-                else:
-                    # Foreign ref
-                    self.foreign_table = expr
-        else:
-            if not node.blocks():
-                for arg in node.flat_args():
-                    if isinstance(arg, ir.Expr):
-                        self._visit(arg)
-
-    def _is_root(self, what):
-        if isinstance(what, ir.Expr):
-            what = what.op()
-        return what in self.query_roots
 
 
 class _CorrelatedRefCheck:
@@ -95,10 +16,6 @@ class _CorrelatedRefCheck:
         self.ctx = query.context
         self.expr = expr
         self.query_roots = frozenset(self.query.table_set.op().root_tables())
-
-        # aliasing required
-        self.foreign_refs = []
-
         self.has_foreign_root = False
         self.has_query_root = False
 
@@ -119,10 +36,10 @@ class _CorrelatedRefCheck:
 
         visit_cache.add(key)
 
-        in_subquery = in_subquery or self.is_subquery(node)
+        in_subquery |= self.is_subquery(node)
 
         for arg in node.flat_args():
-            if isinstance(arg, ir.TableExpr):
+            if isinstance(arg, ir.Table):
                 self.visit_table(
                     arg,
                     in_subquery=in_subquery,
@@ -138,21 +55,17 @@ class _CorrelatedRefCheck:
                 )
 
     def is_subquery(self, node):
-        # XXX
-        if isinstance(
+        return isinstance(
             node,
             (
                 ops.TableArrayView,
                 ops.ExistsSubquery,
                 ops.NotExistsSubquery,
             ),
-        ):
-            return True
-
-        if isinstance(node, ops.TableColumn):
-            return not self.is_root(node.table)
-
-        return False
+        ) or (
+            isinstance(node, ops.TableColumn)
+            and not self.is_root(node.table.op())
+        )
 
     def visit_table(
         self, expr, in_subquery=False, visit_cache=None, visit_table_cache=None
@@ -179,25 +92,37 @@ class _CorrelatedRefCheck:
                     visit_table_cache=visit_table_cache,
                 )
 
-    def ref_check(self, node, in_subquery=False):
+    def ref_check(self, node, in_subquery: bool = False) -> None:
         ctx = self.ctx
-        is_aliased = ctx.has_ref(node)
 
-        if self.is_root(node):
-            if in_subquery:
-                self.has_query_root = True
-        else:
-            if in_subquery:
-                self.has_foreign_root = True
-                if not is_aliased and ctx.has_ref(node, parent_contexts=True):
-                    ctx.make_alias(node)
-            elif not ctx.has_ref(node):
-                ctx.make_alias(node)
+        is_root = self.is_root(node)
 
-    def is_root(self, what):
-        if isinstance(what, ir.Expr):
-            what = what.op()
+        self.has_query_root |= is_root and in_subquery
+        self.has_foreign_root |= not is_root and in_subquery
+
+        if (
+            not is_root
+            and not ctx.has_ref(node)
+            and (not in_subquery or ctx.has_ref(node, parent_contexts=True))
+        ):
+            ctx.make_alias(node)
+
+    def is_root(self, what: ops.TableNode) -> bool:
         return what in self.query_roots
+
+
+def _get_scalar(field):
+    def scalar_handler(results):
+        return results[field][0]
+
+    return scalar_handler
+
+
+def _get_column(name):
+    def column_handler(results):
+        return results[name]
+
+    return column_handler
 
 
 class SelectBuilder:
@@ -228,10 +153,6 @@ class SelectBuilder:
 
         self.query_expr, self.result_handler = self._adapt_expr(self.expr)
 
-        self.sub_memo = {}
-
-        self.queries = []
-
         self.table_set = None
         self.select_set = None
         self.group_by = None
@@ -242,15 +163,9 @@ class SelectBuilder:
         self.subqueries = []
         self.distinct = False
 
-        self.op_memo = set()
-
-        # make idempotent
-        if self.queries:
-            return self._wrap_result()
-
         select_query = self._build_result_query()
 
-        self.queries.append(select_query)
+        self.queries = [select_query]
 
         return select_query
 
@@ -268,60 +183,32 @@ class SelectBuilder:
         # Canonical case is scalar values or arrays produced by some reductions
         # (simple reductions, or distinct, say)
 
-        if isinstance(expr, ir.TableExpr):
+        if isinstance(expr, ir.Table):
             return expr, toolz.identity
 
-        def _get_scalar(field):
-            def scalar_handler(results):
-                return results[field][0]
-
-            return scalar_handler
-
-        if isinstance(expr, ir.ScalarExpr):
+        if isinstance(expr, ir.Scalar):
+            if not expr.has_name():
+                expr = expr.name('tmp')
 
             if L.is_scalar_reduction(expr):
-                table_expr, name = L.reduction_to_aggregation(
-                    expr, default_name='tmp'
-                )
-                return table_expr, _get_scalar(name)
+                table_expr = L.reduction_to_aggregation(expr)
+                return table_expr, _get_scalar(expr.get_name())
             else:
-                base_table = ir.relations.find_base_table(expr)
-                if base_table is None:
-                    # exprs with no table refs
-                    # TODO(phillipc): remove ScalarParameter hack
-                    if isinstance(expr.op(), ops.ScalarParameter):
-                        name = expr.get_name()
-                        assert (
-                            name is not None
-                        ), f'scalar parameter {expr} has no name'
-                        return expr, _get_scalar(name)
-                    return expr.name('tmp'), _get_scalar('tmp')
+                return expr, _get_scalar(expr.get_name())
 
-                raise NotImplementedError(repr(expr))
-
-        elif isinstance(expr, ir.AnalyticExpr):
+        elif isinstance(expr, ir.Analytic):
             return expr.to_aggregation(), toolz.identity
 
-        elif isinstance(expr, ir.ColumnExpr):
+        elif isinstance(expr, ir.Column):
             op = expr.op()
-
-            def _get_column(name):
-                def column_handler(results):
-                    return results[name]
-
-                return column_handler
 
             if isinstance(op, ops.TableColumn):
                 table_expr = op.table[[op.name]]
                 result_handler = _get_column(op.name)
             else:
-                # Something more complicated.
-                base_table = L.find_source_table(expr)
-
                 if not expr.has_name():
                     expr = expr.name('tmp')
-
-                table_expr = base_table.projection([expr])
+                table_expr = expr.to_projection()
                 result_handler = _get_column(expr.get_name())
 
             return table_expr, result_handler
@@ -330,54 +217,10 @@ class SelectBuilder:
                 f'Do not know how to execute: {type(expr)}'
             )
 
-    @staticmethod
-    def _get_subtables(expr):
-        subtables = []
-
-        stack = [expr]
-        seen = set()
-
-        while stack:
-            e = stack.pop()
-            op = e.op()
-
-            if op not in seen:
-                seen.add(op)
-
-                if isinstance(op, ops.Join):
-                    stack.append(op.right)
-                    stack.append(op.left)
-                else:
-                    subtables.append(e)
-
-        return subtables
-
-    @classmethod
-    def _blocking_base(cls, expr):
-        node = expr.op()
-        if node.blocks() or isinstance(node, ops.Join):
-            return expr
-        else:
-            for arg in expr.op().flat_args():
-                if isinstance(arg, ir.TableExpr):
-                    return cls._blocking_base(arg)
-
-    @classmethod
-    def _all_distinct_roots(cls, subtables):
-        bases = []
-        for t in subtables:
-            base = cls._blocking_base(t)
-            for x in bases:
-                if base.equals(x):
-                    return False
-            bases.append(base)
-        return True
-
     def _build_result_query(self):
         self._collect_elements()
 
         self._analyze_select_exprs()
-        self._analyze_filter_exprs()
         self._analyze_subqueries()
         self._populate_context()
 
@@ -425,7 +268,7 @@ class SelectBuilder:
         node = expr.op()
         if isinstance(node, ops.Join):
             for arg in node.args:
-                if isinstance(arg, ir.TableExpr):
+                if isinstance(arg, ir.Table):
                     self._make_table_aliases(arg)
         else:
             if not ctx.is_extracted(expr):
@@ -459,7 +302,7 @@ class SelectBuilder:
 
         unchanged = True
 
-        if isinstance(op, ops.ValueOp):
+        if isinstance(op, ops.Value):
             new_args = []
             for arg in op.args:
                 if isinstance(arg, ir.Expr):
@@ -511,88 +354,23 @@ class SelectBuilder:
 
         return bucket
 
-    def _analyze_filter_exprs(self):
-        # What's semantically contained in the filter predicates may need to be
-        # rewritten. Not sure if this is the right place to do this, but a
-        # starting point
-
-        # Various kinds of semantically valid WHERE clauses may need to be
-        # rewritten into a form that we can actually translate into valid SQL.
-        new_where = []
-        for expr in self.filters:
-            new_expr = self._visit_filter(expr)
-
-            # Transformations may result in there being no outputted filter
-            # predicate
-            if new_expr is not None:
-                new_where.append(new_expr)
-
-        self.filters = new_where
-
-    def _visit_filter(self, expr):
-        # Dumping ground for analysis of WHERE expressions
-        # - Subquery extraction
-        # - Conversion to explicit semi/anti joins
-        # - Rewrites to generate subqueries
-
-        op = expr.op()
-
-        method = f'_visit_filter_{type(op).__name__}'
-        if hasattr(self, method):
-            f = getattr(self, method)
-            return f(expr)
-
-        unchanged = True
-        if isinstance(expr, ir.ScalarExpr):
-            if L.is_reduction(expr):
-                return self._rewrite_reduction_filter(expr)
-
-        if isinstance(op, ops.BinaryOp):
-            left = self._visit_filter(op.left)
-            right = self._visit_filter(op.right)
-            unchanged = left is op.left and right is op.right
-            if unchanged:
-                return expr
-            else:
-                new_op = type(op)(left, right)
-                return new_op.to_expr()
-        elif isinstance(op, (ops.Any, ops.TableColumn, ops.Literal)):
-            return expr
-        elif isinstance(op, ops.ValueOp):
-            visited = [
-                self._visit_filter(arg) if isinstance(arg, ir.Expr) else arg
-                for arg in op.args
-            ]
-            unchanged = True
-            for new, old in zip(visited, op.args):
-                if new is not old:
-                    unchanged = False
-            if not unchanged:
-                new_op = type(op)(*visited)
-                return new_op.to_expr()
-            else:
-                return expr
-        else:
-            raise NotImplementedError(type(op))
-
-    def _rewrite_reduction_filter(self, expr):
-        # Find the table that this reduction references.
-
-        # TODO: what about reductions that reference a join that isn't visible
-        # at this level? Means we probably have the wrong design, but will have
-        # to revisit when it becomes a problem.
-        aggregation, _ = L.reduction_to_aggregation(expr, default_name='tmp')
-        return aggregation.to_array()
-
-    def _visit_filter_Any(self, expr):
-        # Rewrite semi/anti-join predicates in way that can hook into SQL
-        # translation step
-        transform = _AnyToExistsTransform(self.context, expr, self.table_set)
-        return transform.get_result()
+    @util.deprecated(
+        instead=(
+            "do nothing; Any/NotAny is transformed into "
+            "ExistsSubquery/NotExistsSubquery at expression construction time"
+        ),
+        version="4.0.0",
+    )
+    def _visit_filter_Any(self, expr):  # pragma: no cover
+        return expr
 
     _visit_filter_NotAny = _visit_filter_Any
 
-    def _visit_filter_SummaryFilter(self, expr):
+    @util.deprecated(
+        instead="do nothing; SummaryFilter will be removed",
+        version="4.0.0",
+    )
+    def _visit_filter_SummaryFilter(self, expr):  # pragma: no cover
         # Top K is rewritten as an
         # - aggregation
         # - sort by
@@ -617,7 +395,7 @@ class SelectBuilder:
     # Analysis of table set
 
     def _collect_elements(self):
-        # If expr is a ValueExpr, we must seek out the TableExprs that it
+        # If expr is a Value, we must seek out the Tables that it
         # references, build their ASTs, and mark them in our QueryContext
 
         # For now, we need to make the simplifying assumption that a value
@@ -631,18 +409,13 @@ class SelectBuilder:
 
         if isinstance(root_op, ops.TableNode):
             self._collect(source_expr, toplevel=True)
-            if self.table_set is None:
-                raise com.InternalError('no table set')
+            assert self.table_set is not None
         else:
             self.select_set = [source_expr]
 
     def _collect(self, expr, toplevel=False):
         op = expr.op()
         method = f'_collect_{type(op).__name__}'
-
-        # Do not visit nodes twice
-        if op in self.op_memo:
-            return
 
         if hasattr(self, method):
             f = getattr(self, method)
@@ -653,8 +426,6 @@ class SelectBuilder:
             self._collect_Join(expr, toplevel=toplevel)
         else:
             raise NotImplementedError(type(op))
-
-        self.op_memo.add(op)
 
     def _collect_Distinct(self, expr, toplevel=False):
         if toplevel:
@@ -710,26 +481,16 @@ class SelectBuilder:
         table = op.table
 
         if toplevel:
-            subbed = self._sub(expr)
-            sop = subbed.op()
-
             if isinstance(table.op(), ops.Join):
-                can_sub = self._collect_Join(table)
+                self._collect_Join(table)
             else:
-                can_sub = False
                 self._collect(table)
 
             selections = op.selections
             sort_keys = op.sort_keys
             filters = op.predicates
 
-            if can_sub:
-                selections = sop.selections
-                filters = sop.predicates
-                sort_keys = sop.sort_keys
-                table = sop.table
-
-            if len(selections) == 0:
+            if not selections:
                 # select *
                 selections = [table]
 
@@ -737,17 +498,6 @@ class SelectBuilder:
             self.select_set = selections
             self.table_set = table
             self.filters = filters
-
-    def _collect_MaterializedJoin(self, expr, toplevel=False):
-        op = expr.op()
-        join = op.join
-
-        if toplevel:
-            subbed = self._sub(join)
-            self.table_set = subbed
-            self.select_set = [subbed]
-
-        self._collect_Join(join, toplevel=False)
 
     def _convert_group_by(self, exprs):
         return list(range(len(exprs)))
@@ -758,23 +508,10 @@ class SelectBuilder:
             self.table_set = subbed
             self.select_set = [subbed]
 
-        subtables = self._get_subtables(expr)
-
-        # If any of the joined tables are non-blocking modified versions of the
-        # same table, then it's not safe to continue walking down the tree (see
-        # #667), and we should instead have inline views rather than attempting
-        # to fuse things together into the same SELECT query.
-        can_substitute = self._all_distinct_roots(subtables)
-        if can_substitute:
-            for table in subtables:
-                self._collect(table, toplevel=False)
-
-        return can_substitute
-
     def _collect_PhysicalTable(self, expr, toplevel=False):
         if toplevel:
             self.select_set = [expr]
-            self.table_set = expr  # self._sub(expr)
+            self.table_set = expr
 
     def _collect_SelfReference(self, expr, toplevel=False):
         op = expr.op()
@@ -782,10 +519,7 @@ class SelectBuilder:
             self._collect(op.table, toplevel=toplevel)
 
     def _sub(self, what):
-        if isinstance(what, list):
-            return [L.substitute_parents(x, self.sub_memo) for x in what]
-        else:
-            return L.substitute_parents(what, self.sub_memo)
+        return L.substitute_parents(what)
 
     # --------------------------------------------------------------------
     # Subquery analysis / extraction
@@ -812,7 +546,10 @@ class SelectBuilder:
         # want.
 
         # Find the subqueries, and record them in the passed query context.
-        subqueries = ExtractSubqueries.extract(self)
+        subqueries = _extract_common_table_expressions(
+            [self.table_set, *self.filters]
+        )
+
         self.subqueries = []
         for expr in subqueries:
             # See #173. Might have been extracted already in a parent context.

@@ -8,17 +8,17 @@ from ibis.common.validators import immutable_property
 from ibis.expr import datatypes as dt
 from ibis.expr import rules as rlz
 from ibis.expr import types as ir
-from ibis.expr.operations.core import BinaryOp, Node, UnaryOp, ValueOp
+from ibis.expr.operations.core import Binary, Node, Unary, Value
 from ibis.expr.operations.logical import Between
 
 
 @public
-class TemporalUnaryOp(UnaryOp):
+class TemporalUnary(Unary):
     arg = rlz.temporal
 
 
 @public
-class TimestampUnaryOp(UnaryOp):
+class TimestampUnary(Unary):
     arg = rlz.timestamp
 
 
@@ -77,7 +77,7 @@ _timestamp_units = toolz.merge(_date_units, _time_units)
 
 
 @public
-class TimestampTruncate(ValueOp):
+class TimestampTruncate(Value):
     arg = rlz.timestamp
     unit = rlz.isin(_timestamp_units)
 
@@ -86,7 +86,7 @@ class TimestampTruncate(ValueOp):
 
 
 @public
-class DateTruncate(ValueOp):
+class DateTruncate(Value):
     arg = rlz.date
     unit = rlz.isin(_date_units)
 
@@ -95,7 +95,7 @@ class DateTruncate(ValueOp):
 
 
 @public
-class TimeTruncate(ValueOp):
+class TimeTruncate(Value):
     arg = rlz.time
     unit = rlz.isin(_time_units)
 
@@ -104,7 +104,7 @@ class TimeTruncate(ValueOp):
 
 
 @public
-class Strftime(ValueOp):
+class Strftime(Value):
     arg = rlz.temporal
     format_str = rlz.string
 
@@ -113,7 +113,7 @@ class Strftime(ValueOp):
 
 
 @public
-class StringToTimestamp(ValueOp):
+class StringToTimestamp(Value):
     arg = rlz.string
     format_str = rlz.string
     timezone = rlz.optional(rlz.string)
@@ -123,7 +123,7 @@ class StringToTimestamp(ValueOp):
 
 
 @public
-class ExtractTemporalField(TemporalUnaryOp):
+class ExtractTemporalField(TemporalUnary):
     output_dtype = dt.int32
 
 
@@ -196,13 +196,13 @@ class ExtractMillisecond(ExtractTimeField):
 
 
 @public
-class DayOfWeekIndex(UnaryOp):
+class DayOfWeekIndex(Unary):
     arg = rlz.one_of([rlz.date, rlz.timestamp])
     output_dtype = dt.int16
 
 
 @public
-class DayOfWeekName(UnaryOp):
+class DayOfWeekName(Unary):
     arg = rlz.one_of([rlz.date, rlz.timestamp])
     output_dtype = dt.string
 
@@ -214,17 +214,17 @@ class DayOfWeekNode(Node):
 
 
 @public
-class Time(UnaryOp):
+class Time(Unary):
     output_dtype = dt.time
 
 
 @public
-class Date(UnaryOp):
+class Date(Unary):
     output_dtype = dt.date
 
 
 @public
-class DateFromYMD(ValueOp):
+class DateFromYMD(Value):
     year = rlz.integer
     month = rlz.integer
     day = rlz.integer
@@ -234,7 +234,7 @@ class DateFromYMD(ValueOp):
 
 
 @public
-class TimeFromHMS(ValueOp):
+class TimeFromHMS(Value):
     hours = rlz.integer
     minutes = rlz.integer
     seconds = rlz.integer
@@ -244,7 +244,7 @@ class TimeFromHMS(ValueOp):
 
 
 @public
-class TimestampFromYMDHMS(ValueOp):
+class TimestampFromYMDHMS(Value):
     year = rlz.integer
     month = rlz.integer
     day = rlz.integer
@@ -258,7 +258,7 @@ class TimestampFromYMDHMS(ValueOp):
 
 
 @public
-class TimestampFromUNIX(ValueOp):
+class TimestampFromUNIX(Value):
     arg = rlz.any
     # Only pandas-based backends support 'ns'
     unit = rlz.isin({'s', 'ms', 'us', 'ns'})
@@ -269,49 +269,49 @@ class TimestampFromUNIX(ValueOp):
 
 
 @public
-class DateAdd(BinaryOp):
+class DateAdd(Binary):
     left = rlz.date
     right = rlz.interval(units={'Y', 'Q', 'M', 'W', 'D'})
     output_dtype = rlz.dtype_like('left')
 
 
 @public
-class DateSub(BinaryOp):
+class DateSub(Binary):
     left = rlz.date
     right = rlz.interval(units={'Y', 'Q', 'M', 'W', 'D'})
     output_dtype = rlz.dtype_like('left')
 
 
 @public
-class DateDiff(BinaryOp):
+class DateDiff(Binary):
     left = rlz.date
     right = rlz.date
     output_dtype = dt.Interval('D')
 
 
 @public
-class TimeAdd(BinaryOp):
+class TimeAdd(Binary):
     left = rlz.time
     right = rlz.interval(units={'h', 'm', 's', 'ms', 'us', 'ns'})
     output_dtype = rlz.dtype_like('left')
 
 
 @public
-class TimeSub(BinaryOp):
+class TimeSub(Binary):
     left = rlz.time
     right = rlz.interval(units={'h', 'm', 's', 'ms', 'us', 'ns'})
     output_dtype = rlz.dtype_like('left')
 
 
 @public
-class TimeDiff(BinaryOp):
+class TimeDiff(Binary):
     left = rlz.time
     right = rlz.time
     output_dtype = dt.Interval('s')
 
 
 @public
-class TimestampAdd(BinaryOp):
+class TimestampAdd(Binary):
     left = rlz.timestamp
     right = rlz.interval(
         units={'Y', 'Q', 'M', 'W', 'D', 'h', 'm', 's', 'ms', 'us', 'ns'}
@@ -320,7 +320,7 @@ class TimestampAdd(BinaryOp):
 
 
 @public
-class TimestampSub(BinaryOp):
+class TimestampSub(Binary):
     left = rlz.timestamp
     right = rlz.interval(
         units={'Y', 'Q', 'M', 'W', 'D', 'h', 'm', 's', 'ms', 'us', 'ns'}
@@ -329,14 +329,14 @@ class TimestampSub(BinaryOp):
 
 
 @public
-class TimestampDiff(BinaryOp):
+class TimestampDiff(Binary):
     left = rlz.timestamp
     right = rlz.timestamp
     output_dtype = dt.Interval('s')
 
 
 @public
-class ToIntervalUnit(ValueOp):
+class ToIntervalUnit(Value):
     arg = rlz.interval
     unit = rlz.isin({'Y', 'Q', 'M', 'W', 'D', 'h', 'm', 's', 'ms', 'us', 'ns'})
 
@@ -359,7 +359,7 @@ class ToIntervalUnit(ValueOp):
 
 
 @public
-class IntervalBinaryOp(BinaryOp):
+class IntervalBinary(Binary):
     @immutable_property
     def output_dtype(self):
         integer_args = [
@@ -378,35 +378,35 @@ class IntervalBinaryOp(BinaryOp):
 
 
 @public
-class IntervalAdd(IntervalBinaryOp):
+class IntervalAdd(IntervalBinary):
     left = rlz.interval
     right = rlz.interval
     op = operator.add
 
 
 @public
-class IntervalSubtract(IntervalBinaryOp):
+class IntervalSubtract(IntervalBinary):
     left = rlz.interval
     right = rlz.interval
     op = operator.sub
 
 
 @public
-class IntervalMultiply(IntervalBinaryOp):
+class IntervalMultiply(IntervalBinary):
     left = rlz.interval
     right = rlz.numeric
     op = operator.mul
 
 
 @public
-class IntervalFloorDivide(IntervalBinaryOp):
+class IntervalFloorDivide(IntervalBinary):
     left = rlz.interval
     right = rlz.numeric
     op = operator.floordiv
 
 
 @public
-class IntervalFromInteger(ValueOp):
+class IntervalFromInteger(Value):
     arg = rlz.integer
     unit = rlz.isin({'Y', 'Q', 'M', 'W', 'D', 'h', 'm', 's', 'ms', 'us', 'ns'})
 

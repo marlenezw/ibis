@@ -516,7 +516,7 @@ def test_repr_huge_union(benchmark):
         )
         for i in range(n)
     ]
-    expr = functools.reduce(ir.TableExpr.union, tables)
+    expr = functools.reduce(ir.Table.union, tables)
     benchmark(repr, expr)
 
 
@@ -544,8 +544,8 @@ def test_complex_datatype_parse(benchmark):
             )
         )
     )
-    assert dt.parse_type(type_str) == expected
-    benchmark(dt.parse_type, type_str)
+    assert dt.parse(type_str) == expected
+    benchmark(dt.parse, type_str)
 
 
 @pytest.mark.benchmark(group="datatype")
@@ -598,3 +598,19 @@ def test_eq_datatypes(benchmark, dtypes):
         assert a == b
 
     benchmark(eq, dtypes, copy.deepcopy(dtypes))
+
+
+def multiple_joins(table, num_joins):
+    for _ in range(num_joins):
+        table = table.mutate(dummy=ibis.literal(""))
+        table = table.left_join(table, ["dummy"])[[table]]
+
+
+@pytest.mark.parametrize("num_joins", [1, 10, 100])
+@pytest.mark.parametrize("num_columns", [1, 10, 100])
+def test_multiple_joins(benchmark, num_joins, num_columns):
+    table = ibis.table(
+        {f"col_{i:d}": "string" for i in range(num_columns)},
+        name="t",
+    )
+    benchmark(multiple_joins, table, num_joins)

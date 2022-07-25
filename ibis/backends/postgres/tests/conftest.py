@@ -15,11 +15,13 @@
 
 import os
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator
 
 import pytest
+import sqlalchemy as sa
 
 import ibis
+from ibis.backends.conftest import TEST_TABLES, init_database
 from ibis.backends.tests.base import BackendTest, RoundHalfToEven
 
 PG_USER = os.environ.get(
@@ -44,31 +46,62 @@ class TestConf(BackendTest, RoundHalfToEven):
     # for numeric and decimal
 
     returned_timestamp_unit = 's'
+    supports_structs = False
+
+    @staticmethod
+    def _load_data(
+        data_dir: Path,
+        script_dir: Path,
+        user: str = PG_USER,
+        password: str = PG_PASS,
+        host: str = PG_HOST,
+        port: int = PG_PORT,
+        database: str = IBIS_TEST_POSTGRES_DB,
+        **_: Any,
+    ) -> None:
+        """Load test data into a PostgreSQL backend instance.
+
+        Parameters
+        ----------
+        data_dir
+            Location of test data
+        script_dir
+            Location of scripts defining schemas
+        """
+        with open(script_dir / 'schema' / 'postgresql.sql') as schema:
+            engine = init_database(
+                url=sa.engine.make_url(
+                    f"postgresql://{user}:{password}@{host}:{port:d}"
+                ),
+                database=database,
+                schema=schema,
+                isolation_level='AUTOCOMMIT',
+            )
+
+        tables = list(TEST_TABLES) + ['geo']
+        with engine.begin() as con, con.connection.cursor() as cur:
+            for table in tables:
+                # Here we insert rows using COPY table FROM STDIN, using
+                # psycopg2's `copy_expert` API.
+                #
+                # We could use DataFrame.to_sql(method=callable), but that
+                # incurs an unnecessary round trip and requires more code: the
+                # `data_iter` argument would have to be turned back into a CSV
+                # before being passed to `copy_expert`.
+                sql = f"COPY {table} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, DELIMITER ',')"  # noqa: E501
+                with data_dir.joinpath(f'{table}.csv').open('r') as file:
+                    cur.copy_expert(sql=sql, file=file)
+
+        engine.execute('VACUUM FULL ANALYZE')
 
     @staticmethod
     def connect(data_directory: Path):
-        user = os.environ.get(
-            'IBIS_TEST_POSTGRES_USER', os.environ.get('PGUSER', 'postgres')
-        )
-        password = os.environ.get(
-            'IBIS_TEST_POSTGRES_PASSWORD', os.environ.get('PGPASS', 'postgres')
-        )
-        host = os.environ.get(
-            'IBIS_TEST_POSTGRES_HOST', os.environ.get('PGHOST', 'localhost')
-        )
-        port = os.environ.get(
-            'IBIS_TEST_POSTGRES_PORT', os.environ.get('PGPORT', '5432')
-        )
-        database = os.environ.get(
-            'IBIS_TEST_POSTGRES_DATABASE',
-            os.environ.get('PGDATABASE', 'ibis_testing'),
-        )
         return ibis.postgres.connect(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
+            host=PG_HOST,
+            port=PG_PORT,
+            user=PG_USER,
+            password=PG_PASS,
+            database=IBIS_TEST_POSTGRES_DB,
         )
 
 
@@ -77,14 +110,13 @@ def _random_identifier(suffix):
 
 
 @pytest.fixture(scope='session')
-def con():
-    return ibis.postgres.connect(
-        host=PG_HOST,
-        user=PG_USER,
-        password=PG_PASS,
-        database=IBIS_TEST_POSTGRES_DB,
-        port=PG_PORT,
-    )
+def con(tmp_path_factory, data_directory, script_directory, worker_id):
+    return TestConf.load_data(
+        data_directory,
+        script_directory,
+        tmp_path_factory,
+        worker_id,
+    ).connect(data_directory)
 
 
 @pytest.fixture(scope='module')

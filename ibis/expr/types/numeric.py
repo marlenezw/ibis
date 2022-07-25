@@ -6,14 +6,20 @@ from typing import TYPE_CHECKING, Literal, Sequence
 from public import public
 
 from ibis.expr.types.core import _binop
-from ibis.expr.types.generic import AnyColumn, AnyScalar, AnyValue
+from ibis.expr.types.generic import Column, Scalar, Value
 
 if TYPE_CHECKING:
     from ibis.expr import types as ir
 
 
 @public
-class NumericValue(AnyValue):
+class NumericValue(Value):
+    @staticmethod
+    def __negate_op__():
+        from ibis.expr import operations as ops
+
+        return ops.Negate
+
     def negate(self) -> NumericValue:
         """Negate a numeric expression.
 
@@ -22,13 +28,12 @@ class NumericValue(AnyValue):
         NumericValue
             A numeric value expression
         """
-        from ibis.expr import operations as ops
-
         op = self.op()
-        if hasattr(op, 'negate'):
+        try:
             result = op.negate()
-        else:
-            result = ops.Negate(self)
+        except AttributeError:
+            op_class = self.__negate_op__()
+            result = op_class(self)
 
         return result.to_expr()
 
@@ -376,12 +381,12 @@ class NumericValue(AnyValue):
 
 
 @public
-class NumericScalar(AnyScalar, NumericValue):
+class NumericScalar(Scalar, NumericValue):
     pass  # noqa: E701,E302
 
 
 @public
-class NumericColumn(AnyColumn, NumericValue):
+class NumericColumn(Column, NumericValue):
     def quantile(
         self,
         quantile: Sequence[NumericValue | float],

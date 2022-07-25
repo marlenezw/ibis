@@ -146,7 +146,7 @@ def compile_selection(t, expr, scope, timecontext, **kwargs):
     col_to_drop = []
     result_table = src_table
     for selection in op.selections:
-        if isinstance(selection, types.TableExpr):
+        if isinstance(selection, types.Table):
             col_in_selection_order.extend(selection.columns)
         elif isinstance(selection, types.DestructColumn):
             struct_col = t.translate(selection, scope, adjusted_timecontext)
@@ -161,7 +161,7 @@ def compile_selection(t, expr, scope, timecontext, **kwargs):
                 for name in selection.type().names
             ]
             col_in_selection_order.extend(cols)
-        elif isinstance(selection, (types.ColumnExpr, types.ScalarExpr)):
+        elif isinstance(selection, (types.Column, types.Scalar)):
             # If the selection is a straightforward projection of a table
             # column from the root table itself (i.e. excluding mutations and
             # renames), we can get the selection name directly.
@@ -278,6 +278,14 @@ def compile_or(t, expr, scope, timecontext, **kwargs):
     )
 
 
+@compiles(ops.Xor)
+def compile_xor(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    left = t.translate(op.left, scope, timecontext)
+    right = t.translate(op.right, scope, timecontext)
+    return (left | right) & ~(left & right)
+
+
 @compiles(ops.Equals)
 def compile_equals(t, expr, scope, timecontext, **kwargs):
     op = expr.op()
@@ -371,6 +379,8 @@ def compile_literal(t, expr, scope, timecontext, raw=False, **kwargs):
     elif isinstance(value, tuple):
         return F.array(*map(F.lit, value))
     else:
+        if isinstance(value, pd.Timestamp) and value.tz is None:
+            value = value.tz_localize("UTC").to_pydatetime()
         return F.lit(value)
 
 
@@ -387,21 +397,27 @@ def compile_aggregation(t, expr, scope, timecontext, **kwargs):
 
     src_table = t.translate(op.table, scope, timecontext)
 
+    if op.predicates:
+        src_table = src_table.filter(
+            t.translate(
+                functools.reduce(operator.and_, op.predicates),
+                scope,
+                timecontext,
+            )
+        )
+
     if op.by:
         context = AggregationContext.GROUP
-        aggs = [
-            _compile_agg(t, m, scope, timecontext, context=context)
-            for m in op.metrics
-        ]
         bys = [t.translate(b, scope, timecontext) for b in op.by]
-        return src_table.groupby(*bys).agg(*aggs)
+        src_table = src_table.groupby(*bys)
     else:
         context = AggregationContext.ENTIRE
-        aggs = [
-            _compile_agg(t, m, scope, timecontext, context=context)
-            for m in op.metrics
-        ]
-        return src_table.agg(*aggs)
+
+    aggs = [
+        _compile_agg(t, m, scope, timecontext, context=context)
+        for m in op.metrics
+    ]
+    return src_table.agg(*aggs)
 
 
 @compiles(ops.Union)
@@ -444,20 +460,36 @@ def compile_endswith(t, expr, scope, timecontext, **kwargs):
 
 
 def _is_table(table):
-    return isinstance(table.op().arg, ir.TableExpr)
+    try:
+        return isinstance(table.op().arg, ir.Table)
+    except AttributeError:
+        return False
 
 
 def compile_aggregator(
     t, expr, scope, timecontext, *, fn, context=None, **kwargs
 ):
     op = expr.op()
-    src_col = t.translate(op.arg, scope, timecontext)
+    if (where := getattr(op, 'where', None)) is not None:
+        condition = t.translate(where, scope, timecontext)
+    else:
+        condition = None
 
-    if getattr(op, 'where', None) is not None:
-        condition = t.translate(op.where, scope, timecontext)
-        src_col = F.when(condition, src_col)
+    def translate_arg(arg):
+        src_col = t.translate(arg, scope, timecontext)
 
-    col = fn(src_col)
+        if condition is not None:
+            src_col = F.when(condition, src_col)
+        return src_col
+
+    src_inputs = tuple(
+        arg for arg in op.args if arg is not getattr(op, "where", None)
+    )
+    src_cols = tuple(
+        translate_arg(arg) for arg in src_inputs if isinstance(arg, ir.Expr)
+    )
+
+    col = fn(*src_cols)
     if context:
         return col
     else:
@@ -467,18 +499,22 @@ def compile_aggregator(
         # the expr to:
         # df.select(max(some_col))
         if _is_table(expr):
+            (src_col,) = src_cols
             return src_col.select(col)
-        return t.translate(
-            expr.op().arg.op().table, scope, timecontext
-        ).select(col)
+        (table_op,) = op.root_tables()
+        return t.translate(table_op.to_expr(), scope, timecontext).select(col)
 
 
 @compiles(ops.GroupConcat)
 def compile_group_concat(t, expr, scope, timecontext, context=None, **kwargs):
-    sep = expr.op().sep.op().value
+    sep = t.translate(expr.op().sep, scope, timecontext, raw=True)
 
-    def fn(col):
-        return F.concat_ws(sep, F.collect_list(col))
+    def fn(col, _):
+        collected = F.collect_list(col)
+        return F.array_join(
+            F.when(F.size(collected) == 0, F.lit(None)).otherwise(collected),
+            sep,
+        )
 
     return compile_aggregator(
         t, expr, scope, timecontext, fn=fn, context=context
@@ -596,6 +632,34 @@ def compile_sum(t, expr, scope, timecontext, context=None, **kwargs):
     )
 
 
+@compiles(ops.ApproxCountDistinct)
+def compile_approx_count_distinct(
+    t, expr, scope, timecontext, context=None, **kwargs
+):
+    return compile_aggregator(
+        t,
+        expr,
+        scope,
+        timecontext,
+        fn=F.approx_count_distinct,
+        context=context,
+        **kwargs,
+    )
+
+
+@compiles(ops.ApproxMedian)
+def compile_approx_median(t, expr, scope, timecontext, context=None, **kwargs):
+    return compile_aggregator(
+        t,
+        expr,
+        scope,
+        timecontext,
+        fn=lambda arg: F.percentile_approx(arg, 0.5),
+        context=context,
+        **kwargs,
+    )
+
+
 @compiles(ops.StandardDev)
 def compile_std(t, expr, scope, timecontext, context=None, **kwargs):
     how = expr.op().how
@@ -625,6 +689,44 @@ def compile_variance(t, expr, scope, timecontext, context=None, **kwargs):
 
     return compile_aggregator(
         t, expr, scope, timecontext, fn=fn, context=context
+    )
+
+
+@compiles(ops.Covariance)
+def compile_covariance(t, expr, scope, timecontext, context=None, **kwargs):
+    op = expr.op()
+    how = op.how
+
+    fn = {"sample": F.covar_samp, "pop": F.covar_pop}[how]
+
+    pyspark_double_type = ibis_dtype_to_spark_dtype(dtypes.double)
+    expr = op.__class__(
+        left=op.left.cast(pyspark_double_type),
+        right=op.right.cast(pyspark_double_type),
+        how=how,
+        where=op.where,
+    ).to_expr()
+    return compile_aggregator(
+        t, expr, scope, timecontext, fn=fn, context=context
+    )
+
+
+@compiles(ops.Correlation)
+def compile_correlation(t, expr, scope, timecontext, context=None, **kwargs):
+    op = expr.op()
+
+    if (how := op.how) == "pop":
+        raise ValueError("PySpark only implements sample correlation")
+
+    pyspark_double_type = ibis_dtype_to_spark_dtype(dtypes.double)
+    expr = op.__class__(
+        left=op.left.cast(pyspark_double_type),
+        right=op.right.cast(pyspark_double_type),
+        how=how,
+        where=op.where,
+    ).to_expr()
+    return compile_aggregator(
+        t, expr, scope, timecontext, fn=F.corr, context=context
     )
 
 
@@ -830,6 +932,8 @@ def compile_negate(t, expr, scope, timecontext, **kwargs):
     op = expr.op()
 
     src_column = t.translate(op.arg, scope, timecontext)
+    if expr.type() == dtypes.boolean:
+        return ~src_column
     return -src_column
 
 
@@ -1209,7 +1313,7 @@ def _canonicalize_interval(t, interval, scope, timecontext, **kwargs):
     )
 
 
-@compiles(ops.WindowOp)
+@compiles(ops.Window)
 def compile_window_op(t, expr, scope, timecontext, **kwargs):
     op = expr.op()
     window = op.window
@@ -1322,6 +1426,13 @@ def compile_percent_rank(t, expr, scope, timecontext, **kwargs):
     return F.percent_rank()
 
 
+@compiles(ops.CumeDist)
+def compile_cume_dist(t, expr, scope, timecontext, **kwargs):
+    raise com.UnsupportedOperationError(
+        'PySpark backend does not support cume_dist with Ibis.'
+    )
+
+
 @compiles(ops.NTile)
 def compile_ntile(t, expr, scope, timecontext, **kwargs):
     op = expr.op()
@@ -1341,6 +1452,14 @@ def compile_last_value(t, expr, scope, timecontext, **kwargs):
     op = expr.op()
     src_column = t.translate(op.arg, scope, timecontext)
     return F.last(src_column)
+
+
+@compiles(ops.NthValue)
+def compile_nth_value(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    src_column = t.translate(op.arg, scope, timecontext)
+    nth = t.translate(op.nth, scope, timecontext, raw=True)
+    return F.nth_value(src_column, nth + 1)
 
 
 @compiles(ops.RowNumber)
@@ -1554,7 +1673,7 @@ def _get_interval_col(
 ):
     # if interval expression is a binary op, translate expression into
     # an interval column and return
-    if isinstance(interval_ibis_expr.op(), ops.IntervalBinaryOp):
+    if isinstance(interval_ibis_expr.op(), ops.IntervalBinary):
         return t.translate(interval_ibis_expr, scope, timecontext)
 
     # otherwise, translate expression into a literal op and construct
@@ -1906,3 +2025,79 @@ def compile_sql_view(t, expr, scope, timecontext, **kwargs):
     result = backend._session.sql(op.query)
     result.createOrReplaceTempView(op.name)
     return result
+
+
+@compiles(ops.StringContains)
+def compile_string_contains(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    haystack = t.translate(op.haystack, scope, timecontext, **kwargs)
+    needle = t.translate(op.needle, scope, timecontext, **kwargs)
+    return haystack.contains(needle)
+
+
+@compiles(ops.Unnest)
+def compile_unnest(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    column = t.translate(op.arg, scope, timecontext, **kwargs)
+    return F.explode(column)
+
+
+@compiles(ops.NullIfZero)
+def compile_null_if_zero(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    arg = t.translate(op.arg, scope, timecontext, **kwargs)
+    return F.when(arg == 0, F.lit(None)).otherwise(arg)
+
+
+@compiles(ops.Acos)
+@compiles(ops.Asin)
+@compiles(ops.Atan)
+@compiles(ops.Cos)
+@compiles(ops.Sin)
+@compiles(ops.Tan)
+def compile_trig(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    arg = t.translate(op.arg, scope, timecontext, **kwargs)
+    func_name = op.__class__.__name__.lower()
+    func = getattr(F, func_name)
+    return func(arg)
+
+
+@compiles(ops.Cot)
+def compile_cot(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    arg = t.translate(op.arg, scope, timecontext, **kwargs)
+    return F.cos(arg) / F.sin(arg)
+
+
+@compiles(ops.Atan2)
+def compile_atan2(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+    y, x = (t.translate(arg, scope, timecontext, **kwargs) for arg in op.args)
+    return F.atan2(y, x)
+
+
+@compiles(ops.Degrees)
+def compile_degrees(t, expr, scope, timecontext, **kwargs):
+    return F.degrees(t.translate(expr.op().arg, scope, timecontext, **kwargs))
+
+
+@compiles(ops.Radians)
+def compile_radians(t, expr, scope, timecontext, **kwargs):
+    return F.radians(t.translate(expr.op().arg, scope, timecontext, **kwargs))
+
+
+@compiles(ops.ZeroIfNull)
+def compile_zero_if_null(t, expr, scope, timecontext, **kwargs):
+    col = t.translate(expr.op().arg, scope, timecontext, **kwargs)
+    return F.when(col.isNull() | F.isnan(col), F.lit(0)).otherwise(col)
+
+
+@compiles(ops.Where)
+def compile_where(t, expr, scope, timecontext, **kwargs):
+    op = expr.op()
+
+    return F.when(
+        t.translate(op.bool_expr, scope, timecontext, **kwargs),
+        t.translate(op.true_expr, scope, timecontext, **kwargs),
+    ).otherwise(t.translate(op.false_null_expr, scope, timecontext, **kwargs))

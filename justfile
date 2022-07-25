@@ -24,7 +24,7 @@ check *args:
 
 # run pytest for ci; additional arguments are forwarded to pytest
 ci-check *args:
-    poetry run pytest --durations=25 -ra --junitxml=junit.xml --cov=ibis --cov-report=xml:coverage.xml {{ args }}
+    poetry run pytest --junitxml=junit.xml --cov=ibis --cov-report=xml:coverage.xml {{ args }}
 
 # lint code
 lint:
@@ -63,22 +63,17 @@ download-data owner="ibis-project" repo="testing-data" rev="master":
     args+=("$outdir")
     git clone "${args[@]}"
 
-# start backends using docker compose and load data; no arguments starts all backends
+# start backends using docker compose; no arguments starts all backends
 up *backends:
     docker compose up --wait {{ backends }}
-    just load-data {{ backends }}
 
 # stop and remove containers; clean up networks and volumes
 down:
     docker compose down --volumes --remove-orphans
 
-# load data into running backends; requires a running backend
-load-data *backends="all":
-    python ci/datamgr.py -v load {{ backends }}
-
 # run the benchmark suite
-bench *args:
-    pytest --benchmark-only ibis/tests/benchmarks --benchmark-autosave {{ args }}
+bench +args='ibis/tests/benchmarks':
+    pytest --benchmark-only --benchmark-autosave {{ args }}
 
 # check for invalid links in a locally built version of the docs
 checklinks *args:

@@ -54,6 +54,12 @@ def calc_zscore(s):
             id='percent_rank',
         ),
         param(
+            lambda t, win: t.id.cume_dist().over(win),
+            lambda t: t.id.rank(method='min') / t.id.transform(len),
+            id='cume_dist',
+            marks=pytest.mark.notimpl(["pyspark"]),
+        ),
+        param(
             lambda t, win: t.float_col.ntile(buckets=7).over(win),
             lambda t: t,
             id='ntile',
@@ -68,6 +74,26 @@ def calc_zscore(s):
             lambda t, win: t.float_col.last().over(win),
             lambda t: t.float_col.transform('last'),
             id='last',
+        ),
+        param(
+            lambda t, win: t.float_col.nth(3).over(win),
+            lambda t: t.float_col.apply(
+                lambda s: pd.concat(
+                    [
+                        pd.Series(np.nan, index=s.index[:3], dtype="float32"),
+                        pd.Series(
+                            s.iloc[3],
+                            index=s.index[3:],
+                            dtype="float32",
+                        ),
+                    ]
+                )
+            ),
+            id="nth",
+            marks=[
+                pytest.mark.notimpl(["pandas"]),
+                pytest.mark.notyet(["impala"]),
+            ],
         ),
         param(
             lambda _, win: ibis.row_number().over(win),

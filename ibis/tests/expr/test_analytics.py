@@ -20,11 +20,6 @@ from ibis.tests.expr.mocks import MockBackend
 from ibis.tests.util import assert_equal
 
 
-def test_warns_on_deprecated_import():
-    with pytest.warns(FutureWarning, match=r"ibis\.expr\.analytics"):
-        import ibis.expr.analytics  # noqa: F401
-
-
 @pytest.fixture
 def con():
     return MockBackend()
@@ -110,8 +105,7 @@ def test_topk_analysis_bug(airlines):
 
     filtered = t.filter([delay_filter])
 
-    post_pred = filtered.op().predicates[0]
-    assert delay_filter.to_filter().equals(post_pred)
+    assert delay_filter._to_semi_join(t)[t].equals(filtered)
 
 
 def test_topk_function_late_bind(airlines):
@@ -120,3 +114,12 @@ def test_topk_function_late_bind(airlines):
     expr2 = airlines.dest.topk(5, by=airlines.arrdelay.mean())
 
     assert_equal(expr1.to_aggregation(), expr2.to_aggregation())
+
+
+def test_summary_filter_warns(airlines):
+    dests = ['ORD', 'JFK', 'SFO']
+    t = airlines[airlines.dest.isin(dests)]
+    delay_filter = t.origin.topk(10, by=t.arrdelay.mean())
+
+    with pytest.warns(FutureWarning):
+        delay_filter.to_filter()

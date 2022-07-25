@@ -12,7 +12,7 @@ from ibis import util
 from ibis.backends.base.sql.alchemy import BaseAlchemyBackend
 from ibis.backends.postgres.compiler import PostgreSQLCompiler
 from ibis.backends.postgres.datatypes import _get_type
-from ibis.backends.postgres.udf import udf
+from ibis.backends.postgres.udf import udf as _udf
 
 
 class Backend(BaseAlchemyBackend):
@@ -166,11 +166,11 @@ class Backend(BaseAlchemyBackend):
         Callable
             A callable ibis expression
 
-        Function that takes in ColumnExpr arguments and returns an instance
+        Function that takes in Column arguments and returns an instance
         inheriting from PostgresUDFNode
         """
 
-        return udf(
+        return _udf(
             client=self,
             python_func=pyfunc,
             in_types=in_types,

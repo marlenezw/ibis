@@ -5,6 +5,7 @@ from abc import abstractmethod
 import toolz
 from public import public
 
+from ibis import util
 from ibis.common.exceptions import ExpressionError
 from ibis.common.grounds import Comparable
 from ibis.common.validators import immutable_property
@@ -75,9 +76,11 @@ class Node(Annotable, Comparable):
         # analyzed deeper
         return False
 
-    def compatible_with(self, other):
+    @util.deprecated(instead="", version="4.0.0")
+    def compatible_with(self, other):  # pragma: no cover
         return self.equals(other)
 
+    @util.deprecated(version="4.0.0", instead="")
     def is_ancestor(self, other):
         try:
             other = other.op()
@@ -111,7 +114,7 @@ class Node(Annotable, Comparable):
 
 
 @public
-class ValueOp(Node):
+class Value(Node):
     def root_tables(self):
         return distinct_roots(*self.exprs)
 
@@ -148,7 +151,7 @@ class ValueOp(Node):
 
 
 @public
-class Alias(ValueOp):
+class Alias(Value):
     arg = rlz.any
     name = rlz.instance_of((str, UnnamedMarker))
 
@@ -163,7 +166,7 @@ class Alias(ValueOp):
 
 
 @public
-class UnaryOp(ValueOp):
+class Unary(Value):
     """A unary operation."""
 
     arg = rlz.any
@@ -174,7 +177,7 @@ class UnaryOp(ValueOp):
 
 
 @public
-class BinaryOp(ValueOp):
+class Binary(Value):
     """A binary operation."""
 
     left = rlz.any
@@ -183,3 +186,6 @@ class BinaryOp(ValueOp):
     @property
     def output_shape(self):
         return max(self.left.op().output_shape, self.right.op().output_shape)
+
+
+public(ValueOp=Value, UnaryOp=Unary, BinaryOp=Binary)

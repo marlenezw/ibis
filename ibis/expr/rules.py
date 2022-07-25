@@ -2,8 +2,6 @@ import enum
 import functools
 from itertools import product, starmap
 
-from toolz import identity
-
 import ibis.common.exceptions as com
 import ibis.expr.datatypes as dt
 import ibis.expr.schema as sch
@@ -37,7 +35,7 @@ def highest_precedence_dtype(exprs):
 
     Parameters
     ----------
-    exprs : Iterable[ir.ValueExpr]
+    exprs : Iterable[ir.Value]
       A sequence of Expressions
 
     Returns
@@ -46,7 +44,7 @@ def highest_precedence_dtype(exprs):
       The highest precedence datatype
     """
     if not exprs:
-        raise ValueError('Must pass at least one expression')
+        return dt.null
 
     return dt.highest_precedence(expr.type() for expr in exprs)
 
@@ -69,6 +67,7 @@ def comparable(left, right):
 # Input type validators / coercion functions
 
 
+# TODO(kszucs): deprecate then remove
 @validator
 def member_of(obj, arg, **kwargs):
     if isinstance(arg, ir.EnumValue):
@@ -122,14 +121,14 @@ def value(dtype, arg, **kwargs):
 
     Returns
     -------
-    arg : AnyValue
+    arg : Value
       An ibis value expression with the specified datatype
     """
     if not isinstance(arg, ir.Expr):
         # coerce python literal to ibis literal
         arg = ir.literal(arg)
 
-    if not isinstance(arg, ir.AnyValue):
+    if not isinstance(arg, ir.Value):
         raise com.IbisTypeError(
             f'Given argument with type {type(arg)} is not a value '
             'expression'
@@ -154,12 +153,12 @@ def value(dtype, arg, **kwargs):
 
 @validator
 def scalar(inner, arg, **kwargs):
-    return instance_of(ir.ScalarExpr, inner(arg, **kwargs))
+    return instance_of(ir.Scalar, inner(arg, **kwargs))
 
 
 @validator
 def column(inner, arg, **kwargs):
-    return instance_of(ir.ColumnExpr, inner(arg, **kwargs))
+    return instance_of(ir.Column, inner(arg, **kwargs))
 
 
 @validator
@@ -225,10 +224,11 @@ def client(arg, **kwargs):
 
 
 # ---------------------------------------------------------------------
-# Ouput type promoter functions
+# Ouput type functions
 
 
-def promoter(fn):
+@util.deprecated(version="4.0", instead="")
+def promoter(fn):  # pragma: no cover
     @functools.wraps(fn)
     def wrapper(name_or_value, *args, **kwargs):
         if isinstance(name_or_value, str):
@@ -329,7 +329,7 @@ def table(arg, *, schema=None, **kwargs):
     present it must be of the specified type. The table may have extra columns
     not specified in the schema.
     """
-    if not isinstance(arg, ir.TableExpr):
+    if not isinstance(arg, ir.Table):
         raise com.IbisTypeError(
             f'Argument is not a table; got type {type(arg).__name__}'
         )
@@ -359,7 +359,7 @@ def column_from(name, column, *, this):
 
     if isinstance(column, (str, int)):
         return table[column]
-    elif isinstance(column, ir.AnyColumn):
+    elif isinstance(column, ir.Column):
         if not column.has_name():
             raise com.IbisTypeError(f"Passed column {column} has no name")
 
@@ -377,24 +377,42 @@ def column_from(name, column, *, this):
             )
 
     raise com.IbisTypeError(
-        "value must be an int or str or AnyColumn, got "
+        "value must be an int or str or Column, got "
         f"{type(column).__name__}"
     )
 
 
 @validator
+def base_table_of(name, *, this):
+    from ibis.expr.analysis import find_first_base_table
+
+    arg = this[name]
+    base = find_first_base_table(arg)
+    if base is None:
+        raise com.IbisTypeError(f"`{arg}` doesn't have a base table")
+    else:
+        return base
+
+
+@validator
 def function_of(
-    argument,
+    arg,
     fn,
     *,
     output_rule=any,
-    preprocess=identity,
     this,
 ):
     if not util.is_function(fn):
-        raise com.IbisTypeError('argument `fn` must be a function or lambda')
+        raise com.IbisTypeError(
+            'argument `fn` must be a function, lambda or deferred operation'
+        )
 
-    return output_rule(fn(preprocess(this[argument])), this=this)
+    if isinstance(arg, str):
+        arg = this[arg]
+    elif callable(arg):
+        arg = arg(this=this)
+
+    return output_rule(fn(arg), this=this)
 
 
 @validator
@@ -433,7 +451,8 @@ def python_literal(value, arg, **kwargs):
 
 
 @validator
-def is_computable_input(value, **kwargs):
+@util.deprecated(version="4.0", instead="")
+def is_computable_input(value, **kwargs):  # pragma: no cover
     from ibis.backends.pandas.core import (
         is_computable_input as _is_computable_input,
     )
@@ -448,10 +467,11 @@ def is_computable_input(value, **kwargs):
 
 
 @validator
+@util.deprecated(version="4.0.0", instead="")
 def named_literal(value, **kwargs):
     import ibis.expr.operations as ops
 
-    if not isinstance(value, ir.ScalarExpr):
+    if not isinstance(value, ir.Scalar):
         raise com.IbisTypeError(
             "`value` must be a scalar expression; "
             f"got value of type {type(value).__name__}"
@@ -488,6 +508,7 @@ def analytic(arg, **kwargs):
 
 @validator
 def window(win, *, from_base_table_of, this):
+    from ibis.expr.analysis import find_first_base_table
     from ibis.expr.window import Window
 
     if not isinstance(win, Window):
@@ -495,7 +516,8 @@ def window(win, *, from_base_table_of, this):
             "`win` argument should be of type `ibis.expr.window.Window`; "
             f"got type {type(win).__name__}"
         )
-    table = ir.relations.find_base_table(this[from_base_table_of])
+
+    table = find_first_base_table(this[from_base_table_of])
     if table is not None:
         win = win.bind(table)
 
@@ -509,6 +531,3 @@ def window(win, *, from_base_table_of, this):
         if not isinstance(order_var.type(), dt.Timestamp):
             raise com.IbisInputError(error_msg)
     return win
-
-
-# TODO: create varargs marker for impala udfs

@@ -3,7 +3,7 @@ import uuid
 from collections import OrderedDict
 from datetime import date, datetime, time
 from decimal import Decimal
-from operator import methodcaller
+from operator import attrgetter, methodcaller
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.rules as rlz
 import ibis.expr.types as ir
-from ibis import literal
+from ibis import _, literal
 from ibis.common.exceptions import IbisTypeError
 from ibis.tests.util import assert_equal
 
@@ -62,7 +62,7 @@ def test_null():
 def test_literal_with_implicit_type(value, expected_type):
     expr = ibis.literal(value)
 
-    assert isinstance(expr, ir.ScalarExpr)
+    assert isinstance(expr, ir.Scalar)
     assert expr.type() == dt.dtype(expected_type)
 
     assert isinstance(expr.op(), ops.Literal)
@@ -79,7 +79,7 @@ def test_literal_with_implicit_type(value, expected_type):
 def test_listeral_with_unhashable_values(value, expected_type, expected_value):
     expr = ibis.literal(value)
 
-    assert isinstance(expr, ir.ScalarExpr)
+    assert isinstance(expr, ir.Scalar)
     assert expr.type() == dt.dtype(expected_type)
 
     assert isinstance(expr.op(), ops.Literal)
@@ -288,7 +288,7 @@ def test_isin_notin_list(table, container):
 def test_value_counts(table, string_col):
     bool_clause = table[string_col].notin(['1', '4', '7'])
     expr = table[bool_clause][string_col].value_counts()
-    assert isinstance(expr, ir.TableExpr)
+    assert isinstance(expr, ir.Table)
 
 
 def test_isin_notin_scalars():
@@ -316,7 +316,7 @@ def test_scalar_isin_list_with_array(table):
 def test_distinct_table(functional_alltypes):
     expr = functional_alltypes.distinct()
     assert isinstance(expr.op(), ops.Distinct)
-    assert isinstance(expr, ir.TableExpr)
+    assert isinstance(expr, ir.Table)
     assert expr.op().table is functional_alltypes
 
 
@@ -381,7 +381,7 @@ def test_isnan_isinf_scalar(value):
 )
 def test_cumulative_yield_array_types(table, column, operation):
     expr = getattr(getattr(table, column), operation)()
-    assert isinstance(expr, ir.ColumnExpr)
+    assert isinstance(expr, ir.Column)
 
 
 @pytest.fixture(params=['ln', 'log', 'log2', 'log10'])
@@ -438,10 +438,10 @@ def test_string_to_number(table, type):
     casted = table.g.cast(type)
     casted_literal = ibis.literal('5').cast(type).name('bar')
 
-    assert isinstance(casted, ir.ColumnExpr)
+    assert isinstance(casted, ir.Column)
     assert casted.type() == dt.dtype(type)
 
-    assert isinstance(casted_literal, ir.ScalarExpr)
+    assert isinstance(casted_literal, ir.Scalar)
     assert casted_literal.type() == dt.dtype(type)
     assert casted_literal.get_name() == 'bar'
 
@@ -466,7 +466,7 @@ def test_casted_exprs_are_named(table):
     expr.value_counts()
 
 
-@pytest.mark.parametrize('col', list('abcdefh'))
+@pytest.mark.parametrize('col', list('abcdef'))
 def test_negate(table, col):
     c = table[col]
     result = -c
@@ -474,10 +474,19 @@ def test_negate(table, col):
     assert isinstance(result.op(), ops.Negate)
 
 
-def test_negate_boolean_scalar():
-    result = -(ibis.literal(False))
+@pytest.mark.parametrize("op", [operator.neg, operator.invert])
+@pytest.mark.parametrize("value", [True, False])
+def test_negate_boolean_scalar(op, value):
+    result = op(ibis.literal(value))
     assert isinstance(result, ir.BooleanScalar)
-    assert isinstance(result.op(), ops.Negate)
+    assert isinstance(result.op(), ops.Not)
+
+
+@pytest.mark.parametrize("op", [operator.neg, operator.invert])
+def test_negate_boolean_column(table, op):
+    result = op(table["h"])
+    assert isinstance(result, ir.BooleanColumn)
+    assert isinstance(result.op(), ops.Not)
 
 
 @pytest.mark.parametrize('column', ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'])
@@ -488,7 +497,7 @@ def test_arbitrary(table, column, how, condition_fn):
     where = condition_fn(table)
     expr = col.arbitrary(how=how, where=where)
     assert expr.type() == col.type()
-    assert isinstance(expr, ir.ScalarExpr)
+    assert isinstance(expr, ir.Scalar)
     assert L.is_reduction(expr)
 
 
@@ -541,10 +550,10 @@ def test_numbers_compare_numeric_literal(table, operation, column, case):
 def test_boolean_comparisons(table):
     bool_col = table.h
 
-    result = bool_col == True  # noqa
+    result = bool_col == True  # noqa: E712
     assert isinstance(result, ir.BooleanColumn)
 
-    result = bool_col == False  # noqa
+    result = bool_col == False  # noqa: E712
     assert isinstance(result, ir.BooleanColumn)
 
 
@@ -1012,7 +1021,7 @@ def test_between_time_failure_time(case, creator, left, right):
 
 
 def test_custom_type_binary_operations():
-    class Foo(ir.ValueExpr):
+    class Foo(ir.Expr):
         def __add__(self, other):
             op = self.op()
             return type(op)(op.value + other).to_expr()
@@ -1392,3 +1401,168 @@ def test_literal_hash():
     result1 = hash(op)
     assert op._hash == result1
     assert hash(op) == result1
+
+
+@pytest.mark.parametrize(
+    "op_name",
+    [
+        "add",
+        "sub",
+        "mul",
+        "truediv",
+        "floordiv",
+        "pow",
+        "mod",
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+    ],
+)
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        param(_.a, 2, id="a_int"),
+        param(2, _.a, id="int_a"),
+        param(_.a, _.b, id="a_b"),
+    ],
+)
+def test_deferred(op_name, left, right):
+    t = ibis.table(dict(a="int64"), name="t")
+
+    op = getattr(operator, op_name)
+    expr = (
+        t.mutate(b=_.a)
+        .mutate(expr=op(left, right))
+        .group_by(key=_.b.cast("string"))
+        .aggregate(avg=_.b.mean(where=_.a < 1), neg_sum=-_.b.sum())
+        .mutate(c=_.avg <= 1.0, d=~(_["neg_sum"] > 2))
+        .filter(_.c)
+    )
+
+    assert expr.schema() == ibis.schema(
+        dict(
+            key="string",
+            avg="float64",
+            neg_sum="int64",
+            c="bool",
+            d="bool",
+        )
+    )
+
+
+@pytest.mark.parametrize("bool_op_name", ["or_", "and_", "xor"])
+@pytest.mark.parametrize(
+    ("bool_left", "bool_right"),
+    [
+        param(_.a < 1, True, id="a_true"),
+        param(False, _.a > 1, id="false_a"),
+        param(_.a == 2, _.b == 1, id="expr_expr"),
+    ],
+)
+def test_deferred_bool(bool_op_name, bool_left, bool_right):
+    t = ibis.table(dict(a="int64"), name="t")
+
+    bool_op = getattr(operator, bool_op_name)
+    expr = t.mutate(b=_.a).mutate(c=bool_op(bool_left, bool_right)).filter(_.c)
+
+    assert expr.schema() == ibis.schema(dict(a="int64", b="int64", c="bool"))
+
+
+@pytest.mark.parametrize(
+    ("op_name", "expected_left", "expected_right"),
+    [
+        param("add", attrgetter("a"), lambda _: ibis.literal(2), id="add"),
+        param("sub", lambda _: ibis.literal(2), attrgetter("a"), id="sub"),
+        param("mul", attrgetter("a"), lambda _: ibis.literal(2), id="mul"),
+        param(
+            "truediv",
+            lambda _: ibis.literal(2),
+            attrgetter("a"),
+            id="truediv",
+        ),
+        param(
+            "floordiv",
+            lambda _: ibis.literal(2),
+            attrgetter("a"),
+            id="floordiv",
+        ),
+        param("pow", lambda _: ibis.literal(2), attrgetter("a"), id="pow"),
+        param("mod", lambda _: ibis.literal(2), attrgetter("a"), id="mod"),
+    ],
+)
+def test_deferred_r_ops(op_name, expected_left, expected_right):
+    t = ibis.table(dict(a="int64"), name="t")
+
+    left = 2
+    right = _.a
+
+    op = getattr(operator, op_name)
+    expr = t[op(left, right).name("b")]
+
+    op = expr.op().selections[0].op().arg.op()
+    assert op.left.equals(expected_left(t))
+    assert op.right.equals(expected_right(t))
+
+
+@pytest.mark.parametrize(
+    ("expr_fn", "expected_type"),
+    [
+        (lambda t: ibis.where(t.a == 1, t.b, ibis.NA), dt.string),
+        (lambda t: ibis.where(t.a == 1, t.b, t.a.cast("string")), dt.string),
+        (
+            lambda t: ibis.where(t.a == 1, t.b, t.a.cast("!string")),
+            dt.string(nullable=False),
+        ),
+        (lambda _: ibis.where(True, ibis.NA, ibis.NA), dt.null),
+        (lambda _: ibis.where(False, ibis.NA, ibis.NA), dt.null),
+    ],
+)
+def test_non_null_with_null_precedence(expr_fn, expected_type):
+    t = ibis.table(dict(a="int64", b="!string"), name="t")
+    expr = expr_fn(t)
+    assert expr.type() == expected_type
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("names", ("a", "b", "c")),
+        ("types", (dt.int8, dt.string, dt.Array(dt.Array(dt.float64)))),
+        (
+            "fields",
+            ibis.util.frozendict(
+                a=dt.int8,
+                b=dt.string,
+                c=dt.Array(dt.Array(dt.float64)),
+            ),
+        ),
+    ],
+)
+def test_struct_names_types_fields(name, expected):
+    s = ibis.struct(dict(a=1, b="2", c=[[1.0], [], [None]]))
+    assert getattr(s, name) == expected
+
+
+@pytest.mark.parametrize(
+    ['arg', 'typestr', 'type'],
+    [
+        ([1, 2, 3], None, dt.Array(dt.int8)),
+        ([1, 2, 3], 'array<int16>', dt.Array(dt.int16)),
+        ([1, 2, 3.0], None, dt.Array(dt.double)),
+        (['a', 'b', 'c'], None, dt.Array(dt.string)),
+    ],
+)
+def test_array_literal(arg, typestr, type):
+    x = ibis.literal(arg, type=typestr)
+    assert x._arg.value == tuple(arg)
+    assert x.type() == type
+
+
+def test_array_length_scalar():
+    raw_value = [1, 2, 4]
+    value = ibis.literal(raw_value)
+    expr = value.length()
+    assert isinstance(expr.op(), ops.ArrayLength)

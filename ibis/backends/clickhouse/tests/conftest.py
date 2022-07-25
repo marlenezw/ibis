@@ -6,6 +6,7 @@ import pytest
 
 import ibis
 import ibis.expr.types as ir
+from ibis.backends.conftest import TEST_TABLES, read_tables
 from ibis.backends.tests.base import (
     BackendTest,
     RoundHalfToEven,
@@ -28,27 +29,63 @@ class TestConf(UnorderedComparator, BackendTest, RoundHalfToEven):
     bool_is_int = True
 
     @staticmethod
-    def connect(data_directory: Path):
-        pytest.importorskip("clickhouse_driver")
-        host = os.environ.get('IBIS_TEST_CLICKHOUSE_HOST', 'localhost')
-        port = int(os.environ.get('IBIS_TEST_CLICKHOUSE_PORT', 9000))
-        user = os.environ.get('IBIS_TEST_CLICKHOUSE_USER', 'default')
-        password = os.environ.get('IBIS_TEST_CLICKHOUSE_PASSWORD', '')
-        database = os.environ.get(
-            'IBIS_TEST_CLICKHOUSE_DATABASE', 'ibis_testing'
-        )
-        return ibis.clickhouse.connect(
+    def _load_data(
+        data_dir: Path,
+        script_dir: Path,
+        host: str = CLICKHOUSE_HOST,
+        port: int = CLICKHOUSE_PORT,
+        user: str = CLICKHOUSE_USER,
+        password: str = CLICKHOUSE_PASS,
+        database: str = IBIS_TEST_CLICKHOUSE_DB,
+        **_,
+    ) -> None:
+        """Load test data into a ClickHouse backend instance.
+
+        Parameters
+        ----------
+        data_dir
+            Location of test data
+        script_dir
+            Location of scripts defining schemas
+        """
+        clickhouse_driver = pytest.importorskip("clickhouse_driver")
+
+        client = clickhouse_driver.Client(
             host=host,
             port=port,
-            password=password,
-            database=database,
             user=user,
+            password=password,
+        )
+
+        client.execute(f"DROP DATABASE IF EXISTS {database}")
+        client.execute(f"CREATE DATABASE {database}")
+        client.execute(f"USE {database}")
+
+        with open(script_dir / 'schema' / 'clickhouse.sql') as schema:
+            for stmt in filter(None, map(str.strip, schema.read().split(";"))):
+                client.execute(stmt)
+
+        for table, df in read_tables(TEST_TABLES, data_dir):
+            query = f"INSERT INTO {table} VALUES"
+            client.insert_dataframe(
+                query,
+                df.to_pandas(),
+                settings={"use_numpy": True},
+            )
+
+    @staticmethod
+    def connect(data_directory: Path):
+        pytest.importorskip("clickhouse_driver")
+        return ibis.clickhouse.connect(
+            host=CLICKHOUSE_HOST,
+            port=CLICKHOUSE_PORT,
+            password=CLICKHOUSE_PASS,
+            database=IBIS_TEST_CLICKHOUSE_DB,
+            user=CLICKHOUSE_USER,
         )
 
     @staticmethod
-    def greatest(
-        f: Callable[..., ir.ValueExpr], *args: ir.ValueExpr
-    ) -> ir.ValueExpr:
+    def greatest(f: Callable[..., ir.Value], *args: ir.Value) -> ir.Value:
         if len(args) > 2:
             raise NotImplementedError(
                 'Clickhouse does not support more than 2 arguments to greatest'
@@ -56,9 +93,7 @@ class TestConf(UnorderedComparator, BackendTest, RoundHalfToEven):
         return f(*args)
 
     @staticmethod
-    def least(
-        f: Callable[..., ir.ValueExpr], *args: ir.ValueExpr
-    ) -> ir.ValueExpr:
+    def least(f: Callable[..., ir.Value], *args: ir.Value) -> ir.Value:
         if len(args) > 2:
             raise NotImplementedError(
                 'Clickhouse does not support more than 2 arguments to least'
@@ -67,14 +102,13 @@ class TestConf(UnorderedComparator, BackendTest, RoundHalfToEven):
 
 
 @pytest.fixture(scope='module')
-def con():
-    return ibis.clickhouse.connect(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_PORT,
-        user=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASS,
-        database=IBIS_TEST_CLICKHOUSE_DB,
-    )
+def con(tmp_path_factory, data_directory, script_directory, worker_id):
+    return TestConf.load_data(
+        data_directory,
+        script_directory,
+        tmp_path_factory,
+        worker_id,
+    ).connect(data_directory)
 
 
 @pytest.fixture(scope='module')

@@ -13,12 +13,14 @@ import ibis.expr.types as ir
 from ibis.backends.base.sql.alchemy import (
     AlchemyExprTranslator,
     fixed_arity,
+    reduction,
     sqlalchemy_operation_registry,
     sqlalchemy_window_functions_registry,
     unary,
     varargs,
     variance_reduction,
 )
+from ibis.backends.base.sql.alchemy.registry import _clip, _gen_string_find
 
 operation_registry = sqlalchemy_operation_registry.copy()
 operation_registry.update(sqlalchemy_window_functions_registry)
@@ -53,7 +55,7 @@ def _string_or_timestamp_to_date(t, arg, _):
 
 @sqlite_cast.register(
     AlchemyExprTranslator,
-    ir.ValueExpr,
+    ir.Value,
     (dt.Date, dt.Timestamp),
 )
 def _value_to_temporal(t, arg, _):
@@ -65,7 +67,7 @@ def _category_to_int(t, arg, _):
     return t.translate(arg)
 
 
-@sqlite_cast.register(AlchemyExprTranslator, ir.ValueExpr, dt.DataType)
+@sqlite_cast.register(AlchemyExprTranslator, ir.Value, dt.DataType)
 def _default_cast_impl(t, arg, target_type):
     return sa.cast(t.translate(arg), t.get_sqla_type(target_type))
 
@@ -73,21 +75,6 @@ def _default_cast_impl(t, arg, target_type):
 def _cast(t, expr):
     op = expr.op()
     return sqlite_cast(t, op.arg, op.to)
-
-
-def _substr(t, expr):
-    f = sa.func.substr
-
-    arg, start, length = expr.op().args
-
-    sa_arg = t.translate(arg)
-    sa_start = t.translate(start)
-
-    if length is None:
-        return f(sa_arg, sa_start + 1)
-    else:
-        sa_length = t.translate(length)
-        return f(sa_arg, sa_start + 1, sa_length)
 
 
 def _string_right(t, expr):
@@ -99,19 +86,6 @@ def _string_right(t, expr):
     sa_length = t.translate(length)
 
     return f(sa_arg, -sa_length, sa_length)
-
-
-def _string_find(t, expr):
-    arg, substr, start, _ = expr.op().args
-
-    if start is not None:
-        raise NotImplementedError
-
-    sa_arg = t.translate(arg)
-    sa_substr = t.translate(substr)
-
-    f = sa.func.instr
-    return f(sa_arg, sa_substr) - 1
 
 
 def _strftime(t, expr):
@@ -178,17 +152,6 @@ def _millisecond(t, expr):
     sa_arg = t.translate(arg)
     fractional_second = sa.func.strftime('%f', sa_arg)
     return (fractional_second * 1000) % 1000
-
-
-def _identical_to(t, expr):
-    left, right = args = expr.op().args
-    if left.equals(right):
-        return True
-    else:
-        left, right = map(t.translate, args)
-        return sa.func.coalesce(
-            (left.is_(None) & right.is_(None)) | (left == right), False
-        )
 
 
 def _log(t, expr):
@@ -329,9 +292,8 @@ operation_registry.update(
     {
         ops.Cast: _cast,
         ops.DateFromYMD: _date_from_ymd,
-        ops.Substring: _substr,
         ops.StrRight: _string_right,
-        ops.StringFind: _string_find,
+        ops.StringFind: _gen_string_find(sa.func.instr),
         ops.StringJoin: _string_join,
         ops.StringConcat: _string_concat,
         ops.Least: varargs(sa.func.min),
@@ -356,7 +318,6 @@ operation_registry.update(
         ops.ExtractSecond: _strftime_int('%S'),
         ops.ExtractMillisecond: _millisecond,
         ops.TimestampNow: fixed_arity(lambda: sa.func.datetime("now"), 0),
-        ops.IdenticalTo: _identical_to,
         ops.RegexSearch: fixed_arity(sa.func._ibis_sqlite_regex_search, 2),
         ops.RegexReplace: fixed_arity(sa.func._ibis_sqlite_regex_replace, 3),
         ops.RegexExtract: fixed_arity(sa.func._ibis_sqlite_regex_extract, 3),
@@ -384,5 +345,19 @@ operation_registry.update(
             sa.func._ibis_sqlite_sqrt, variance_reduction('_ibis_sqlite_var')
         ),
         ops.RowID: lambda *_: sa.literal_column('rowid'),
+        ops.Cot: unary(sa.func._ibis_sqlite_cot),
+        ops.Cos: unary(sa.func._ibis_sqlite_cos),
+        ops.Sin: unary(sa.func._ibis_sqlite_sin),
+        ops.Tan: unary(sa.func._ibis_sqlite_tan),
+        ops.Acos: unary(sa.func._ibis_sqlite_acos),
+        ops.Asin: unary(sa.func._ibis_sqlite_asin),
+        ops.Atan: unary(sa.func._ibis_sqlite_atan),
+        ops.Atan2: fixed_arity(sa.func._ibis_sqlite_atan2, 2),
+        ops.BitOr: reduction(sa.func._ibis_sqlite_bit_or),
+        ops.BitAnd: reduction(sa.func._ibis_sqlite_bit_and),
+        ops.BitXor: reduction(sa.func._ibis_sqlite_bit_xor),
+        ops.Degrees: unary(sa.func._ibis_sqlite_degrees),
+        ops.Radians: unary(sa.func._ibis_sqlite_radians),
+        ops.Clip: _clip(min_func=sa.func.min, max_func=sa.func.max),
     }
 )

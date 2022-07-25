@@ -7,27 +7,27 @@ from ibis.common.validators import immutable_property
 from ibis.expr import datatypes as dt
 from ibis.expr import rules as rlz
 from ibis.expr import types as ir
-from ibis.expr.operations.core import BinaryOp, UnaryOp, ValueOp
+from ibis.expr.operations.core import Binary, Unary, Value
 
 
 @public
-class NumericBinaryOp(BinaryOp):
+class NumericBinary(Binary):
     left = rlz.numeric
     right = rlz.numeric
 
 
 @public
-class Add(NumericBinaryOp):
+class Add(NumericBinary):
     output_dtype = rlz.numeric_like("args", operator.add)
 
 
 @public
-class Multiply(NumericBinaryOp):
+class Multiply(NumericBinary):
     output_dtype = rlz.numeric_like("args", operator.mul)
 
 
 @public
-class Power(NumericBinaryOp):
+class Power(NumericBinary):
     @property
     def output_dtype(self):
         if util.all_of(self.args, ir.IntegerValue):
@@ -37,12 +37,12 @@ class Power(NumericBinaryOp):
 
 
 @public
-class Subtract(NumericBinaryOp):
+class Subtract(NumericBinary):
     output_dtype = rlz.numeric_like("args", operator.sub)
 
 
 @public
-class Divide(NumericBinaryOp):
+class Divide(NumericBinary):
     output_dtype = dt.float64
 
 
@@ -52,19 +52,19 @@ class FloorDivide(Divide):
 
 
 @public
-class Modulus(NumericBinaryOp):
+class Modulus(NumericBinary):
     output_dtype = rlz.numeric_like("args", operator.mod)
 
 
 @public
-class Negate(UnaryOp):
+class Negate(Unary):
     arg = rlz.one_of((rlz.numeric, rlz.interval))
 
     output_dtype = rlz.dtype_like("arg")
 
 
 @public
-class NullIfZero(UnaryOp):
+class NullIfZero(Unary):
     """Set values to NULL if they are equal to zero.
 
     Commonly used in cases where divide-by-zero would produce an overflow or
@@ -87,19 +87,19 @@ class NullIfZero(UnaryOp):
 
 
 @public
-class IsNan(UnaryOp):
+class IsNan(Unary):
     arg = rlz.floating
     output_dtype = dt.boolean
 
 
 @public
-class IsInf(UnaryOp):
+class IsInf(Unary):
     arg = rlz.floating
     output_dtype = dt.boolean
 
 
 @public
-class Abs(UnaryOp):
+class Abs(Unary):
     """Absolute value"""
 
     arg = rlz.numeric
@@ -107,7 +107,7 @@ class Abs(UnaryOp):
 
 
 @public
-class Ceil(UnaryOp):
+class Ceil(Unary):
     """
     Round up to the nearest integer value greater than or equal to this value
 
@@ -129,7 +129,7 @@ class Ceil(UnaryOp):
 
 
 @public
-class Floor(UnaryOp):
+class Floor(Unary):
     """
     Round down to the nearest integer value less than or equal to this value
 
@@ -151,7 +151,7 @@ class Floor(UnaryOp):
 
 
 @public
-class Round(ValueOp):
+class Round(Value):
     arg = rlz.numeric
     digits = rlz.optional(rlz.numeric)
 
@@ -168,7 +168,7 @@ class Round(ValueOp):
 
 
 @public
-class Clip(ValueOp):
+class Clip(Value):
     arg = rlz.strict_numeric
     lower = rlz.optional(rlz.strict_numeric)
     upper = rlz.optional(rlz.strict_numeric)
@@ -178,7 +178,7 @@ class Clip(ValueOp):
 
 
 @public
-class BaseConvert(ValueOp):
+class BaseConvert(Value):
     arg = rlz.one_of([rlz.integer, rlz.string])
     from_base = rlz.integer
     to_base = rlz.integer
@@ -188,7 +188,7 @@ class BaseConvert(ValueOp):
 
 
 @public
-class MathUnaryOp(UnaryOp):
+class MathUnary(Unary):
     arg = rlz.numeric
 
     @immutable_property
@@ -200,7 +200,7 @@ class MathUnaryOp(UnaryOp):
 
 
 @public
-class ExpandingMathUnaryOp(MathUnaryOp):
+class ExpandingMathUnary(MathUnary):
     @immutable_property
     def output_dtype(self):
         if isinstance(self.arg.type(), dt.Decimal):
@@ -210,23 +210,23 @@ class ExpandingMathUnaryOp(MathUnaryOp):
 
 
 @public
-class Exp(ExpandingMathUnaryOp):
+class Exp(ExpandingMathUnary):
     pass
 
 
 @public
-class Sign(UnaryOp):
+class Sign(Unary):
     arg = rlz.numeric
     output_dtype = rlz.dtype_like("arg")
 
 
 @public
-class Sqrt(MathUnaryOp):
+class Sqrt(MathUnary):
     pass
 
 
 @public
-class Logarithm(MathUnaryOp):
+class Logarithm(MathUnary):
     arg = rlz.strict_numeric
 
 
@@ -252,12 +252,12 @@ class Log10(Logarithm):
 
 
 @public
-class Degrees(ExpandingMathUnaryOp):
+class Degrees(ExpandingMathUnary):
     """Converts radians to degrees"""
 
 
 @public
-class Radians(MathUnaryOp):
+class Radians(MathUnary):
     """Converts degrees to radians"""
 
 
@@ -265,12 +265,12 @@ class Radians(MathUnaryOp):
 
 
 @public
-class TrigonometricUnary(MathUnaryOp):
+class TrigonometricUnary(MathUnary):
     """Trigonometric base unary"""
 
 
 @public
-class TrigonometricBinary(BinaryOp):
+class TrigonometricBinary(Binary):
     """Trigonometric base binary"""
 
     left = rlz.numeric

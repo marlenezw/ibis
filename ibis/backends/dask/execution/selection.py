@@ -32,7 +32,7 @@ from ibis.expr.scope import Scope
 from ibis.expr.typing import TimeContext
 
 
-@compute_projection.register(ir.ScalarExpr, ops.Selection, dd.DataFrame)
+@compute_projection.register(ir.Scalar, ops.Selection, dd.DataFrame)
 def compute_projection_scalar_expr(
     expr,
     parent,
@@ -66,7 +66,7 @@ def compute_projection_scalar_expr(
     return data.assign(**{name: scalar})[name]
 
 
-@compute_projection.register(ir.ColumnExpr, ops.Selection, dd.DataFrame)
+@compute_projection.register(ir.Column, ops.Selection, dd.DataFrame)
 def compute_projection_column_expr(
     expr,
     parent,
@@ -113,7 +113,7 @@ def compute_projection_column_expr(
     return result
 
 
-compute_projection.register(ir.TableExpr, ops.Selection, dd.DataFrame)(
+compute_projection.register(ir.Table, ops.Selection, dd.DataFrame)(
     compute_projection_table_expr
 )
 
@@ -245,7 +245,7 @@ def _compute_predicates(
     Parameters
     ----------
     table_op : TableNode
-    predicates : List[ir.ColumnExpr]
+    predicates : List[ir.Column]
     data : pd.DataFrame
     scope : Scope
     timecontext: Optional[TimeContext]

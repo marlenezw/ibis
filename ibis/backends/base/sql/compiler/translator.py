@@ -164,19 +164,18 @@ class QueryContext:
         self.query = query
 
     def is_foreign_expr(self, expr):
-        from ibis.expr.analysis import ExprValidator
+        from ibis.expr.analysis import shares_all_roots
 
         # The expression isn't foreign to us. For example, the parent table set
         # in a correlated WHERE subquery
         if self.has_ref(expr, parent_contexts=True):
             return False
 
-        exprs = [self.query.table_set] + self.query.select_set
-        validator = ExprValidator(exprs)
-        return not validator.validate(expr)
+        parents = [self.query.table_set] + self.query.select_set
+        return not shares_all_roots(expr, parents)
 
     def _get_table_key(self, table):
-        if isinstance(table, ir.TableExpr):
+        if isinstance(table, ir.Table):
             return table.op()
         elif isinstance(table, ops.TableNode):
             return table
@@ -382,3 +381,9 @@ def _rewrite_cast(expr):
     if isinstance(to, dt.Interval) and isinstance(arg.type(), dt.Integer):
         return arg.to_interval(unit=to.unit)
     return expr
+
+
+@rewrites(ops.StringContains)
+def _rewrite_string_contains(expr):
+    op = expr.op()
+    return op.haystack.find(op.needle) >= 0

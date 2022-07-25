@@ -1,16 +1,15 @@
 """Dispatching code for Selection operations.
 """
 
-
 import functools
 import operator
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from operator import methodcaller
 from typing import List, Optional
 
 import pandas as pd
 from multipledispatch import Dispatcher
-from toolz import compose, concat, concatv, first, unique
+from toolz import compose, concat, concatv, unique
 
 import ibis.expr.operations as ops
 import ibis.expr.types as ir
@@ -29,7 +28,7 @@ or table expression.
 
 Parameters
 ----------
-expr : Union[ir.ScalarExpr, ir.ColumnExpr, ir.TableExpr]
+expr : Union[ir.Scalar, ir.Column, ir.Table]
 parent : ops.Selection
 data : pd.DataFrame
 scope : Scope
@@ -41,13 +40,13 @@ value : scalar, pd.Series, pd.DataFrame
 
 Notes
 -----
-:class:`~ibis.expr.types.ScalarExpr` instances occur when a specific column
+:class:`~ibis.expr.types.Scalar` instances occur when a specific column
 projection is a window operation.
 """,
 )
 
 
-@compute_projection.register(ir.ScalarExpr, ops.Selection, pd.DataFrame)
+@compute_projection.register(ir.Scalar, ops.Selection, pd.DataFrame)
 def compute_projection_scalar_expr(
     expr,
     parent,
@@ -87,7 +86,7 @@ def compute_projection_scalar_expr(
     return result
 
 
-@compute_projection.register(ir.ColumnExpr, ops.Selection, pd.DataFrame)
+@compute_projection.register(ir.Column, ops.Selection, pd.DataFrame)
 def compute_projection_column_expr(
     expr,
     parent,
@@ -139,9 +138,9 @@ def compute_projection_column_expr(
     return result
 
 
-@compute_projection.register(ir.TableExpr, ops.Selection, pd.DataFrame)
-def compute_projection_table_expr(expr, parent, data, **kwargs):
-    if expr is parent.table:
+@compute_projection.register(ir.Table, ops.Selection, pd.DataFrame)
+def compute_projection_table_expr(expr, parent, data, **_):
+    if expr.equals(parent.table):
         return data
 
     parent_table_op = parent.table.op()
@@ -159,22 +158,22 @@ def compute_projection_table_expr(expr, parent, data, **kwargs):
 
 
 def remap_overlapping_column_names(table_op, root_table, data_columns):
-    """Return an ``OrderedDict`` mapping possibly suffixed column names to
+    """Return a mapping of possibly-suffixed column names to
     column names without suffixes.
 
     Parameters
     ----------
-    table_op : TableNode
-        The ``TableNode`` we're selecting from.
-    root_table : TableNode
+    table_op
+        The `TableNode` we're selecting from.
+    root_table
         The root table of the expression we're selecting from.
-    data_columns : set or frozenset
+    data_columns
         The available columns to select from
 
     Returns
     -------
-    mapping : OrderedDict[str, str]
-        A map from possibly-suffixed column names to column names without
+    dict[str, str]
+        A mapping from possibly-suffixed column names to column names without
         suffixes.
     """
     if not isinstance(table_op, ops.Join):
@@ -185,20 +184,33 @@ def remap_overlapping_column_names(table_op, root_table, data_columns):
         left_root: constants.LEFT_JOIN_SUFFIX,
         right_root: constants.RIGHT_JOIN_SUFFIX,
     }
+
+    # if we're selecting from the root table and that's not the left or right
+    # child, don't add a suffix
+    #
+    # this can happen when selecting directly from a join as opposed to
+    # explicitly referencing the left or right tables
+    #
+    # we use setdefault here because the root_table can be the left/right table
+    # which we may have already put into `suffixes`
+    suffixes.setdefault(root_table, "")
+
+    suffix = suffixes[root_table]
+
     column_names = [
-        ({name, name + suffixes[root_table]} & data_columns, name)
+        ({name, f"{name}{suffix}"} & data_columns, name)
         for name in root_table.schema.names
     ]
-    mapping = OrderedDict(
-        (first(col_name), final_name)
-        for col_name, final_name in column_names
-        if col_name
-    )
-    return mapping
+
+    return {
+        col_names.pop(): final_name
+        for col_names, final_name in column_names
+        if col_names
+    }
 
 
 def map_new_column_names_to_data(mapping, df):
-    if mapping is not None:
+    if mapping:
         return df.loc[:, mapping.keys()].rename(columns=mapping)
     return df
 
@@ -216,7 +228,7 @@ def _compute_predicates(
     Parameters
     ----------
     table_op : TableNode
-    predicates : List[ir.ColumnExpr]
+    predicates : List[ir.Column]
     data : pd.DataFrame
     scope : Scope
     timecontext: Optional[TimeContext]
@@ -300,7 +312,7 @@ def physical_tables_node(node):
 
 
 def build_df_from_selection(
-    selection_exprs: List[ir.ColumnExpr],
+    selection_exprs: List[ir.Column],
     data: pd.DataFrame,
     table_op: ops.Node,
 ) -> pd.DataFrame:

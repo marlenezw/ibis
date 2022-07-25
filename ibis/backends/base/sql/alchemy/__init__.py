@@ -116,6 +116,11 @@ class BaseAlchemyBackend(BaseSQLBackend):
         self._inspector.info_cache.clear()
         return self._inspector
 
+    @contextlib.contextmanager
+    def _safe_raw_sql(self, *args, **kwargs):
+        with self.begin() as con:
+            yield con.execute(*args, **kwargs)
+
     @staticmethod
     def _to_geodataframe(df, schema):
         """Convert `df` to a `GeoDataFrame`.
@@ -123,24 +128,24 @@ class BaseAlchemyBackend(BaseSQLBackend):
         Required libraries for geospatial support must be installed and a
         geospatial column is present in the dataframe.
         """
-        import geopandas
+        import geopandas as gpd
         from geoalchemy2 import shape
-
-        def to_shapely(row, name):
-            return shape.to_shape(row[name]) if row[name] is not None else None
 
         geom_col = None
         for name, dtype in schema.items():
             if isinstance(dtype, dt.GeoSpatial):
                 geom_col = geom_col or name
-                df[name] = df.apply(lambda x: to_shapely(x, name), axis=1)
+                df[name] = df[name].map(
+                    lambda row: None if row is None else shape.to_shape(row)
+                )
         if geom_col:
-            df = geopandas.GeoDataFrame(df, geometry=geom_col)
+            df[geom_col] = gpd.array.GeometryArray(df[geom_col].values)
+            df = gpd.GeoDataFrame(df, geometry=geom_col)
         return df
 
-    def fetch_from_cursor(self, cursor, schema):
+    def fetch_from_cursor(self, cursor, schema: sch.Schema) -> pd.DataFrame:
         df = pd.DataFrame.from_records(
-            cursor.fetchall(),
+            cursor,
             columns=cursor.keys(),
             coerce_float=True,
         )
@@ -157,7 +162,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
     def create_table(
         self,
         name: str,
-        expr: pd.DataFrame | ir.TableExpr | None = None,
+        expr: pd.DataFrame | ir.Table | None = None,
         schema: sch.Schema | None = None,
         database: str | None = None,
         force: bool = False,
@@ -361,7 +366,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
     ) -> sa.Table:
         return sa.Table(name, self.meta, schema=schema, autoload=autoload)
 
-    def _sqla_table_to_expr(self, table: sa.Table) -> ir.TableExpr:
+    def _sqla_table_to_expr(self, table: sa.Table) -> ir.Table:
         schema = self._schemas.get(table.name)
         node = self.table_class(
             source=self,
@@ -376,7 +381,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
         name: str,
         database: str | None = None,
         schema: str | None = None,
-    ) -> ir.TableExpr:
+    ) -> ir.Table:
         """Create a table expression from a table in the database.
 
         Parameters
@@ -395,7 +400,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
 
         Returns
         -------
-        TableExpr
+        Table
             Table expression
         """
         if database is not None and database != self.current_database:
@@ -414,7 +419,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
     def insert(
         self,
         table_name: str,
-        obj: pd.DataFrame | ir.TableExpr,
+        obj: pd.DataFrame | ir.Table,
         database: str | None = None,
         overwrite: bool = False,
     ) -> None:
@@ -457,7 +462,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
                 if_exists='replace' if overwrite else 'append',
                 schema=self._current_schema,
             )
-        elif isinstance(obj, ir.TableExpr):
+        elif isinstance(obj, ir.Table):
             to_table_expr = self.table(table_name)
             to_table_schema = to_table_expr.schema()
 
@@ -484,7 +489,7 @@ class BaseAlchemyBackend(BaseSQLBackend):
         else:
             raise ValueError(
                 "No operation is being performed. Either the obj parameter "
-                "is not a pandas DataFrame or is not a ibis TableExpr."
+                "is not a pandas DataFrame or is not a ibis Table."
                 f"The given obj is of type {type(obj).__name__} ."
             )
 
@@ -514,6 +519,6 @@ class BaseAlchemyBackend(BaseSQLBackend):
         compiled = definition.compile()
         defn = self._get_temp_view_definition(name, definition=compiled)
         query = sa.text(defn).bindparams(**compiled.params)
-        self.con.execute(query, definition)
+        self.con.execute(query)
         self._temp_views.add(raw_name)
         self._register_temp_view_cleanup(name, raw_name)

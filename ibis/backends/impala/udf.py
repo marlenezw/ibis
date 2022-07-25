@@ -72,7 +72,7 @@ class ScalarFunction(Function):
         }
         fields['output_dtype'] = self.output
         fields['output_shape'] = rlz.shape_like('args')
-        return type(f"UDF_{self.name}", (ops.ValueOp,), fields)
+        return type(f"UDF_{self.name}", (ops.Value,), fields)
 
 
 class AggregateFunction(Function):
@@ -81,9 +81,7 @@ class AggregateFunction(Function):
             f'_{i}': rlz.value(dtype) for i, dtype in enumerate(self.inputs)
         }
         fields['output_dtype'] = self.output
-        fields['output_shape'] = rlz.Shape.SCALAR
-        fields['_reduction'] = True
-        return type(f"UDA_{self.name}", (ops.ValueOp,), fields)
+        return type(f"UDA_{self.name}", (ops.Reduction,), fields)
 
 
 class ImpalaFunction:

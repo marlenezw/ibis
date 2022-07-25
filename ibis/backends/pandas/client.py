@@ -1,5 +1,7 @@
 """The pandas client implementation."""
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 import pandas as pd
 import toolz
@@ -139,7 +141,7 @@ def _infer_pandas_series_contents(s: pd.Series) -> dt.DataType:
         if inferred_dtype == 'mixed':
             # We need to inspect an element to determine the Ibis dtype
             value = s.iloc[0]
-            if isinstance(value, (np.ndarray, list, pd.Series)):
+            if isinstance(value, (np.ndarray, pd.Series, Sequence, Mapping)):
                 # Defer to individual `infer` functions for these
                 return dt.infer(value)
             else:
@@ -265,7 +267,9 @@ def convert_boolean_to_series(in_dtype, out_dtype, column):
     # XXX: this is a workaround until #1595 can be addressed
     in_dtype_type = in_dtype.type
     out_dtype_type = out_dtype.to_pandas().type
-    if in_dtype_type != np.object_ and in_dtype_type != out_dtype_type:
+    if column.empty or (
+        in_dtype_type != np.object_ and in_dtype_type != out_dtype_type
+    ):
         return column.astype(out_dtype_type)
     return column
 
@@ -273,6 +277,16 @@ def convert_boolean_to_series(in_dtype, out_dtype, column):
 @sch.convert.register(object, dt.DataType, pd.Series)
 def convert_any_to_any(_, out_dtype, column):
     return column.astype(out_dtype.to_pandas(), errors='ignore')
+
+
+@sch.convert.register(object, dt.Struct, pd.Series)
+def convert_struct_to_dict(_, out_dtype, column):
+    def convert_element(values, names=out_dtype.names):
+        if values is None or isinstance(values, dict) or pd.isna(values):
+            return values
+        return dict(zip(names, values))
+
+    return column.map(convert_element)
 
 
 dt.DataType.to_pandas = ibis_dtype_to_pandas  # type: ignore
